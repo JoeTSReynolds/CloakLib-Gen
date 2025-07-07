@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import os
 import sys
 import argparse
@@ -10,11 +7,13 @@ import cv2
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Import Fawkes directly
 from fawkes.protection import Fawkes
 
 # Supported image formats by Fawkes
 SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png']
+
+# Image formats that can be converted to supported formats
+CONVERTIBLE_IMAGE_FORMATS = ['.webp', '.bmp', '.tiff', '.tif', '.gif']
 
 # Supported video formats
 SUPPORTED_VIDEO_FORMATS = ['.mp4', '.avi', '.mov', '.wmv']
@@ -23,6 +22,32 @@ def is_image_supported(file_path):
     """Check if an image file is supported by Fawkes"""
     file_ext = os.path.splitext(file_path)[1].lower()
     return file_ext in SUPPORTED_IMAGE_FORMATS
+
+def is_image_convertible(file_path):
+    """Check if an image file can be converted to a supported format"""
+    file_ext = os.path.splitext(file_path)[1].lower()
+    return file_ext in CONVERTIBLE_IMAGE_FORMATS
+
+def convert_image_to_supported_format(image_path, output_dir):
+    """Convert an unsupported image format to PNG"""
+    try:
+        # Read the image
+        image = cv2.imread(image_path)
+        if image is None:
+            print(f"Warning: Could not read image {image_path}")
+            return None
+        
+        # Create output filename with PNG extension
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        output_path = os.path.join(output_dir, f"{base_name}.png")
+        
+        # Save as PNG
+        cv2.imwrite(output_path, image)
+        print(f"Converted {os.path.basename(image_path)} to PNG format")
+        return output_path
+    except Exception as e:
+        print(f"Error converting {image_path}: {str(e)}")
+        return None
 
 def is_video_supported(file_path):
     """Check if a video file is supported for processing"""
@@ -277,6 +302,35 @@ def process_video(video_path, dirs, fawkes_protector, batch_size=10, num_threads
         print(f"Error processing video {filename}: {str(e)}")
         return False
 
+def process_single_image(image_path, base_dir, fawkes_protector):
+    """Process a single image file"""
+    # Setup directories
+    dirs = setup_directories(base_dir)
+    
+    # Check if image needs conversion
+    converted_path = None
+    if is_image_convertible(image_path):
+        temp_dir = os.path.join(os.path.dirname(image_path), "temp_conversion")
+        os.makedirs(temp_dir, exist_ok=True)
+        converted_path = convert_image_to_supported_format(image_path, temp_dir)
+        if converted_path:
+            image_path = converted_path
+        else:
+            print(f"Failed to convert {image_path}")
+            return False
+    elif not is_image_supported(image_path):
+        print(f"Unsupported image format: {image_path}")
+        return False
+    
+    success = process_image(image_path, dirs, fawkes_protector)
+    
+    # Clean up converted file if it was created
+    if converted_path and os.path.exists(converted_path):
+        temp_dir = os.path.dirname(converted_path)
+        shutil.rmtree(temp_dir)
+    
+    return success > 0
+
 def process_directory(input_dir, base_dir, batch_size=10, num_threads=1, mode="high"):
     """Process all supported files in the input directory"""
     # Setup directories
@@ -300,15 +354,34 @@ def process_directory(input_dir, base_dir, batch_size=10, num_threads=1, mode="h
     # Get all files in the input directory
     all_files = glob.glob(os.path.join(input_dir, "*"))
     
-    # Process images
+    # Separate supported, convertible, and video files
     image_files = [f for f in all_files if is_image_supported(f)]
+    convertible_files = [f for f in all_files if is_image_convertible(f)]
+    video_files = [f for f in all_files if is_video_supported(f)]
+    
     print(f"\nFound {len(image_files)} supported images to process")
+    print(f"Found {len(convertible_files)} convertible images to process")
+    
+    # Convert unsupported images first
+    converted_images = []
+    if convertible_files:
+        temp_conversion_dir = os.path.join(input_dir, "temp_conversions")
+        os.makedirs(temp_conversion_dir, exist_ok=True)
+        
+        for convertible_file in convertible_files:
+            print(f"Converting {os.path.basename(convertible_file)}...")
+            converted_path = convert_image_to_supported_format(convertible_file, temp_conversion_dir)
+            if converted_path:
+                converted_images.append(converted_path)
+    
+    # Combine all images to process
+    all_image_files = image_files + converted_images
     
     img_success = 0
-    if image_files:
-        if num_threads > 1 and len(image_files) > 1:
+    if all_image_files:
+        if num_threads > 1 and len(all_image_files) > 1:
             # Process images with threading
-            image_batches = [image_files[i:i + batch_size] for i in range(0, len(image_files), batch_size)]
+            image_batches = [all_image_files[i:i + batch_size] for i in range(0, len(all_image_files), batch_size)]
             
             with ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = []
@@ -322,14 +395,19 @@ def process_directory(input_dir, base_dir, batch_size=10, num_threads=1, mode="h
                         pbar.update(1)
         else:
             # Process images sequentially
-            for i, img_file in enumerate(image_files):
-                print(f"\nProcessing image {i+1}/{len(image_files)}: {os.path.basename(img_file)}")
+            for i, img_file in enumerate(all_image_files):
+                print(f"\nProcessing image {i+1}/{len(all_image_files)}: {os.path.basename(img_file)}")
                 img_success += process_image(img_file, dirs, fawkes_protector)
     else:
         print("No supported images found to process.")
     
+    # Clean up conversion directory
+    if convertible_files:
+        temp_conversion_dir = os.path.join(input_dir, "temp_conversions")
+        if os.path.exists(temp_conversion_dir):
+            shutil.rmtree(temp_conversion_dir)
+    
     # Process videos
-    video_files = [f for f in all_files if is_video_supported(f)]
     print(f"\nFound {len(video_files)} supported videos to process")
     
     vid_success = 0
@@ -345,14 +423,17 @@ def process_directory(input_dir, base_dir, batch_size=10, num_threads=1, mode="h
     print("\n" + "="*50)
     print("PROCESSING SUMMARY")
     print("="*50)
-    print(f"Images: Successfully processed {img_success}/{len(image_files)}")
+    print(f"Images: Successfully processed {img_success}/{len(all_image_files)}")
+    if convertible_files:
+        print(f"Converted images: {len(converted_images)}/{len(convertible_files)}")
     print(f"Videos: Successfully processed {vid_success}/{len(video_files)}")
-    print(f"Skipped: {len(all_files) - len(image_files) - len(video_files)} unsupported files")
+    print(f"Skipped: {len(all_files) - len(image_files) - len(convertible_files) - len(video_files)} unsupported files")
     print("="*50)
 
 def main():
     parser = argparse.ArgumentParser(description="Process images and videos with Fawkes cloaking")
-    parser.add_argument("input_dir", type=str, help="Directory containing images/videos to process")
+    parser.add_argument("input_path", type=str, help="Image file to process, or directory if --dir is specified")
+    parser.add_argument("--dir", action="store_true", help="Process all files in the specified directory")
     parser.add_argument("--batch-size", type=int, default=10, help="Number of images to process in each batch")
     parser.add_argument("--threads", type=int, default=1, help="Number of threads to use for processing")
     parser.add_argument("--mode", type=str, default="mid", choices=["low", "mid", "high"], 
@@ -360,23 +441,87 @@ def main():
     args = parser.parse_args()
     
     # Get absolute paths
-    input_dir = os.path.abspath(args.input_dir)
+    input_path = os.path.abspath(args.input_path)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # Check if input directory exists
-    if not os.path.exists(input_dir):
-        print(f"Error: Input directory '{input_dir}' does not exist!")
+    # Check if input path exists
+    if not os.path.exists(input_path):
+        print(f"Error: Input path '{input_path}' does not exist!")
         sys.exit(1)
     
-    print(f"Processing files from: {input_dir}")
     print(f"Base directory: {base_dir}")
     print(f"Library will be created/updated in: {os.path.join(base_dir, 'CloakingLibrary')}")
     print(f"Batch size: {args.batch_size}")
     print(f"Threads: {args.threads}")
     print(f"Protection mode: {args.mode}")
     
-    # Process the directory
-    process_directory(input_dir, base_dir, args.batch_size, args.threads, args.mode)
+    if args.dir:
+        # Process directory
+        if not os.path.isdir(input_path):
+            print(f"Error: '{input_path}' is not a directory!")
+            sys.exit(1)
+        
+        print(f"Processing files from directory: {input_path}")
+        process_directory(input_path, base_dir, args.batch_size, args.threads, args.mode)
+    else:
+        # Process single file
+        if os.path.isdir(input_path):
+            print(f"Error: '{input_path}' is a directory! Use --dir flag to process directories.")
+            sys.exit(1)
+        
+        print(f"Processing single file: {input_path}")
+        
+        # Check if it's a video or image
+        if is_video_supported(input_path):
+            print("Initializing Fawkes protector for video processing...")
+            try:
+                fawkes_protector = Fawkes(
+                    feature_extractor="arcface_extractor_0",
+                    gpu="0",
+                    batch_size=args.batch_size,
+                    mode=args.mode
+                )
+                print(f"Fawkes protector initialized with mode: {args.mode}")
+            except Exception as e:
+                print(f"Failed to initialize Fawkes: {str(e)}")
+                sys.exit(1)
+            
+            dirs = setup_directories(base_dir)
+            success = process_video(input_path, dirs, fawkes_protector, args.batch_size, args.threads)
+            
+            print("\n" + "="*50)
+            print("PROCESSING SUMMARY")
+            print("="*50)
+            print(f"Video: {'Successfully processed' if success else 'Failed to process'}")
+            print("="*50)
+            
+        elif is_image_supported(input_path) or is_image_convertible(input_path):
+            print("Initializing Fawkes protector for image processing...")
+            try:
+                fawkes_protector = Fawkes(
+                    feature_extractor="arcface_extractor_0",
+                    gpu="0",
+                    batch_size=args.batch_size,
+                    mode=args.mode
+                )
+                print(f"Fawkes protector initialized with mode: {args.mode}")
+            except Exception as e:
+                print(f"Failed to initialize Fawkes: {str(e)}")
+                sys.exit(1)
+            
+            success = process_single_image(input_path, base_dir, fawkes_protector)
+            
+            print("\n" + "="*50)
+            print("PROCESSING SUMMARY")
+            print("="*50)
+            print(f"Image: {'Successfully processed' if success else 'Failed to process'}")
+            print("="*50)
+        else:
+            print(f"Error: Unsupported file format: {input_path}")
+            print(f"Supported image formats: {', '.join(SUPPORTED_IMAGE_FORMATS)}")
+            print(f"Convertible image formats: {', '.join(CONVERTIBLE_IMAGE_FORMATS)}")
+            print(f"Supported video formats: {', '.join(SUPPORTED_VIDEO_FORMATS)}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
