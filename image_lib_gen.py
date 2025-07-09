@@ -54,6 +54,13 @@ def is_video_supported(file_path):
     file_ext = os.path.splitext(file_path)[1].lower()
     return file_ext in SUPPORTED_VIDEO_FORMATS
 
+def get_cloaked_filename(original_filename, level, manual_ext=None):
+    """Generate cloaked filename based on original and protection level"""
+    base_name, ext = os.path.splitext(original_filename)
+    if manual_ext:
+        ext = manual_ext
+    return f"{base_name}_cloaked_{level}{ext}"
+
 def setup_directories(base_dir):
     """Ensure all required directories exist"""
     img_raw_dir = os.path.join(base_dir, "CloakingLibrary", "Images", "Raw")
@@ -103,10 +110,6 @@ def process_image_batch(image_paths, dirs, fawkes_protector, batch_id=0):
         for i, image_path in enumerate(image_paths):
             filename = os.path.basename(image_path)
             
-            # Copy original to Raw directory
-            raw_dest = os.path.join(dirs["img_raw"], filename)
-            shutil.copy2(image_path, raw_dest)
-            
             # Check for cloaked image
             base_name = os.path.splitext(filename)[0]
             ext = os.path.splitext(filename)[1]
@@ -115,9 +118,14 @@ def process_image_batch(image_paths, dirs, fawkes_protector, batch_id=0):
             
             if os.path.exists(cloaked_path):
                 # Convert back to original format if needed
-                final_cloaked_name = f"{base_name}_cloaked{ext}"
+                final_cloaked_name = get_cloaked_filename(filename, fawkes_protector.mode)
                 final_dest = os.path.join(dirs["img_cloaked"], final_cloaked_name)
                 shutil.copy2(cloaked_path, final_dest)
+                
+                # Only copy original to Raw directory if cloaking succeeded
+                raw_dest = os.path.join(dirs["img_raw"], filename)
+                shutil.copy2(image_path, raw_dest)
+                
                 success_count += 1
         
         # Clean up temp directory
@@ -284,7 +292,7 @@ def process_video(video_path, dirs, fawkes_protector, batch_size=10, num_threads
                 process_video_frames_batch(batch, fawkes_protector, cloaked_frames_dir, batch_id)
         
         # Create output video from cloaked frames
-        output_filename = f"{os.path.splitext(filename)[0]}_cloaked{os.path.splitext(filename)[1]}"
+        output_filename = get_cloaked_filename(filename, fawkes_protector.mode)
         output_path = os.path.join(dirs["vid_cloaked"], output_filename)
         
         success = create_video_from_frames(cloaked_frames_dir, output_path, fps)
