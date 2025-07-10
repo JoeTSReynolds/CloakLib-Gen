@@ -7,21 +7,20 @@ import cv2
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from cloaklib import CloakingLibrary
 from fawkes.protection import Fawkes
 
-# Supported image formats by Fawkes
-SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png']
+cloaking_library_instance = CloakingLibrary()
 
 # Image formats that can be converted to supported formats
 CONVERTIBLE_IMAGE_FORMATS = ['.webp', '.bmp', '.tiff', '.tif', '.gif']
 
-# Supported video formats
-SUPPORTED_VIDEO_FORMATS = ['.mp4', '.avi', '.mov', '.wmv']
 
+##### HELPERS ######
 def is_image_supported(file_path):
     """Check if an image file is supported by Fawkes"""
     file_ext = os.path.splitext(file_path)[1].lower()
-    return file_ext in SUPPORTED_IMAGE_FORMATS
+    return file_ext in cloaking_library_instance.SUPPORTED_IMAGE_FORMATS
 
 def is_image_convertible(file_path):
     """Check if an image file can be converted to a supported format"""
@@ -52,35 +51,9 @@ def convert_image_to_supported_format(image_path, output_dir):
 def is_video_supported(file_path):
     """Check if a video file is supported for processing"""
     file_ext = os.path.splitext(file_path)[1].lower()
-    return file_ext in SUPPORTED_VIDEO_FORMATS
+    return file_ext in cloaking_library_instance.SUPPORTED_VIDEO_FORMATS
 
-def get_cloaked_filename(original_filename, level, manual_ext=None):
-    """Generate cloaked filename based on original and protection level"""
-    base_name, ext = os.path.splitext(original_filename)
-    if manual_ext:
-        ext = manual_ext
-    return f"{base_name}_cloaked_{level}{ext}"
-
-def setup_directories(base_dir):
-    """Ensure all required directories exist"""
-    img_raw_dir = os.path.join(base_dir, "CloakingLibrary", "Images", "Raw")
-    img_cloaked_dir = os.path.join(base_dir, "CloakingLibrary", "Images", "Cloaked")
-    vid_raw_dir = os.path.join(base_dir, "CloakingLibrary", "Videos", "Raw")
-    vid_cloaked_dir = os.path.join(base_dir, "CloakingLibrary", "Videos", "Cloaked")
-    
-    os.makedirs(img_raw_dir, exist_ok=True)
-    os.makedirs(img_cloaked_dir, exist_ok=True)
-    os.makedirs(vid_raw_dir, exist_ok=True)
-    os.makedirs(vid_cloaked_dir, exist_ok=True)
-    
-    return {
-        "img_raw": img_raw_dir,
-        "img_cloaked": img_cloaked_dir,
-        "vid_raw": vid_raw_dir,
-        "vid_cloaked": vid_cloaked_dir
-    }
-
-def process_image_batch(image_paths, dirs, fawkes_protector, batch_id=0):
+def process_image_batch(image_paths, fawkes_protector, batch_id=0):
     """Process a batch of images with Fawkes"""
     try:
         # Create temporary directory for this batch
@@ -108,27 +81,9 @@ def process_image_batch(image_paths, dirs, fawkes_protector, batch_id=0):
         success_count = 0
         # Copy results to appropriate directories
         for i, image_path in enumerate(image_paths):
-            filename = os.path.basename(image_path)
-            
-            # Check for cloaked image
-            base_name = os.path.splitext(filename)[0]
-            ext = os.path.splitext(filename)[1]
-            cloaked_filename = f"{base_name}_cloaked.png"
-            cloaked_path = os.path.join(temp_dir, cloaked_filename)
-            
-            if os.path.exists(cloaked_path):
-                # Convert back to original format if needed
-                final_cloaked_name = get_cloaked_filename(filename, fawkes_protector.mode)
-                final_dest = os.path.join(dirs["img_cloaked"], final_cloaked_name)
-                shutil.copy2(cloaked_path, final_dest)
-                
-                # Only copy original to Raw directory if cloaking succeeded
-                raw_dest = os.path.join(dirs["img_raw"], filename)
-                shutil.copy2(image_path, raw_dest)
-                
+            if cloaking_library_instance.add_to_library(image_path, image_path, "high", 1): # TODO: change this
                 success_count += 1
-        
-        # Clean up temp directory
+
         shutil.rmtree(temp_dir)
         return success_count
         
@@ -136,9 +91,9 @@ def process_image_batch(image_paths, dirs, fawkes_protector, batch_id=0):
         print(f"Error processing batch {batch_id}: {str(e)}")
         return 0
 
-def process_image(image_path, dirs, fawkes_protector):
+def process_image(image_path, fawkes_protector):
     """Process a single image with Fawkes"""
-    return process_image_batch([image_path], dirs, fawkes_protector, 0)
+    return process_image_batch([image_path], fawkes_protector, 0)
 
 def extract_frames(video_path, output_dir):
     """Extract frames from a video file"""
@@ -166,7 +121,7 @@ def extract_frames(video_path, output_dir):
     vidcap.release()
     return frame_paths, fps
 
-def create_video_from_frames(frame_dir, output_path, fps):
+def create_video_from_frames(original_path, frame_dir, output_path, fps):
     """Create a video from a directory of frames"""
     frame_files = sorted(glob.glob(os.path.join(frame_dir, "frame_*.png")))
     if not frame_files:
@@ -189,7 +144,7 @@ def create_video_from_frames(frame_dir, output_path, fps):
             pbar.update(1)
     
     video_writer.release()
-    return True
+    return cloaking_library_instance.add_to_library(original_path, output_path, "high", 1) # TODO: change this
 
 def process_video_frames_batch(frame_paths, fawkes_protector, cloaked_frames_dir, batch_id):
     """Process a batch of video frames"""
@@ -292,10 +247,10 @@ def process_video(video_path, dirs, fawkes_protector, batch_size=10, num_threads
                 process_video_frames_batch(batch, fawkes_protector, cloaked_frames_dir, batch_id)
         
         # Create output video from cloaked frames
-        output_filename = get_cloaked_filename(filename, fawkes_protector.mode)
-        output_path = os.path.join(dirs["vid_cloaked"], output_filename)
+        output_filename = f"temp_{filename}"
+        output_path = os.path.join(temp_dir, output_filename)
         
-        success = create_video_from_frames(cloaked_frames_dir, output_path, fps)
+        success = create_video_from_frames(video_path, cloaked_frames_dir, output_path, fps)
         
         # Clean up temp directory
         shutil.rmtree(temp_dir)
@@ -312,8 +267,6 @@ def process_video(video_path, dirs, fawkes_protector, batch_size=10, num_threads
 
 def process_single_image(image_path, base_dir, fawkes_protector):
     """Process a single image file"""
-    # Setup directories
-    dirs = setup_directories(base_dir)
     
     # Check if image needs conversion
     converted_path = None
@@ -330,7 +283,7 @@ def process_single_image(image_path, base_dir, fawkes_protector):
         print(f"Unsupported image format: {image_path}")
         return False
     
-    success = process_image(image_path, dirs, fawkes_protector)
+    success = process_image(image_path, fawkes_protector)
     
     # Clean up converted file if it was created
     if converted_path and os.path.exists(converted_path):
@@ -341,8 +294,6 @@ def process_single_image(image_path, base_dir, fawkes_protector):
 
 def process_directory(input_dir, base_dir, batch_size=10, num_threads=1, mode="high"):
     """Process all supported files in the input directory"""
-    # Setup directories
-    dirs = setup_directories(base_dir)
     
     print("Initializing Fawkes protector...")
     
@@ -394,7 +345,7 @@ def process_directory(input_dir, base_dir, batch_size=10, num_threads=1, mode="h
             with ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = []
                 for batch_id, batch in enumerate(image_batches):
-                    future = executor.submit(process_image_batch, batch, dirs, fawkes_protector, batch_id)
+                    future = executor.submit(process_image_batch, batch, fawkes_protector, batch_id)
                     futures.append(future)
                 
                 with tqdm(total=len(image_batches), desc="Processing image batches") as pbar:
@@ -405,7 +356,7 @@ def process_directory(input_dir, base_dir, batch_size=10, num_threads=1, mode="h
             # Process images sequentially
             for i, img_file in enumerate(all_image_files):
                 print(f"\nProcessing image {i+1}/{len(all_image_files)}: {os.path.basename(img_file)}")
-                img_success += process_image(img_file, dirs, fawkes_protector)
+                img_success += process_image(img_file, fawkes_protector)
     else:
         print("No supported images found to process.")
     
@@ -422,7 +373,7 @@ def process_directory(input_dir, base_dir, batch_size=10, num_threads=1, mode="h
     if video_files:
         for i, vid_file in enumerate(video_files):
             print(f"\nProcessing video {i+1}/{len(video_files)}: {os.path.basename(vid_file)}")
-            if process_video(vid_file, dirs, fawkes_protector, batch_size, num_threads):
+            if process_video(vid_file, fawkes_protector, batch_size, num_threads):
                 vid_success += 1
     else:
         print("No supported videos found to process.")
@@ -493,9 +444,8 @@ def main():
             except Exception as e:
                 print(f"Failed to initialize Fawkes: {str(e)}")
                 sys.exit(1)
-            
-            dirs = setup_directories(base_dir)
-            success = process_video(input_path, dirs, fawkes_protector, args.batch_size, args.threads)
+
+            success = process_video(input_path, fawkes_protector, args.batch_size, args.threads)
             
             print("\n" + "="*50)
             print("PROCESSING SUMMARY")
@@ -526,9 +476,9 @@ def main():
             print("="*50)
         else:
             print(f"Error: Unsupported file format: {input_path}")
-            print(f"Supported image formats: {', '.join(SUPPORTED_IMAGE_FORMATS)}")
+            print(f"Supported image formats: {', '.join(cloaking_library_instance.SUPPORTED_IMAGE_FORMATS)}")
             print(f"Convertible image formats: {', '.join(CONVERTIBLE_IMAGE_FORMATS)}")
-            print(f"Supported video formats: {', '.join(SUPPORTED_VIDEO_FORMATS)}")
+            print(f"Supported video formats: {', '.join(cloaking_library_instance.SUPPORTED_VIDEO_FORMATS)}")
             sys.exit(1)
 
 if __name__ == "__main__":

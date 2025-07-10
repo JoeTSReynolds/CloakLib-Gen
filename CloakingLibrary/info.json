@@ -1,0 +1,37 @@
+{
+    "person_data" : {
+        "1" : {
+            "name" : "Pedro Pascal"
+        }
+    },
+
+    "file_data" : [
+        {
+            "file_name" : "pedro_cloaked_high.png",
+            "person_id" : 1,
+            "media_type" : "image",
+            "cloak_level" : "high",
+            "original_file_name" : "pedro.png"
+        },
+        {
+            "file_name" : "pedro_cloaked_mid.png",
+            "person_id" : 1,
+            "media_type" : "image",
+            "cloak_level" : "mid",
+            "original_file_name" : "pedro.png"
+        },
+        {
+            "file_name" : "pedro_cloaked_low.png",
+            "person_id" : 1,
+            "media_type" : "image",
+            "cloak_level" : "low",
+            "original_file_name" : "pedro.png"
+        },
+        {
+            "file_name" : "pedro.png",
+            "person_id" : 1,
+            "media_type" : "image",
+            "cloak_level" : "none"
+        }
+    ]
+}
