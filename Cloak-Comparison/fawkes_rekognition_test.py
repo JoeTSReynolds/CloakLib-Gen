@@ -132,9 +132,9 @@ class FaceRecognitionSystem:
 
 def main():
     # Configuration
-    bucket = 'cloakingbucket' 
+    bucket = 'cloakingbucketdoubleday' 
     collection_id = 'my-face-collection'
-    profile_name = 'sajida_config'  
+    profile_name = 'joe'  
     
     # Initialize the face recognition system
     face_system = FaceRecognitionSystem(profile_name=profile_name)
@@ -152,7 +152,7 @@ def main():
     # Create Image IDs (Names) using images uploaded in S3 AWS Console
     enrollment_images = [
         ('BellaRamsey_photo1.jpg', 'Bella_Ramsey'),
-        ('TheRock_photo1.jpeg', 'The_Rock')
+        ('TheRock_photo1.jpg', 'The_Rock')
     ]
     
     total_faces_indexed = 0
@@ -169,7 +169,7 @@ def main():
     
     # Step 5: Search for faces (recognition phase)
     print("\nStep 5: Testing face recognition...")
-    test_images = ['BellaRamsey_photo2.jpg', 'test_BellaRamsey1.jpg']
+    test_images = ['BellaRamsey_photo2.jpg', 'test_BellaRamsey.jpg']
     
     for test_image in test_images:
         print(f"\n--- Testing with {test_image} ---")
