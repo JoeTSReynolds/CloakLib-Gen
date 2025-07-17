@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -8,10 +8,10 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
-  StyleSheet,
   Dimensions,
   Modal,
   FlatList,
+  StyleSheet,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import faceRecognitionService, { FaceMatch, EnrollmentResult, RecognitionResult } from '../services/faceRecognition';
@@ -55,6 +55,8 @@ const FaceRecognitionScreen: React.FC = () => {
   };
 
   const enrollFace = async () => {
+    Alert.alert('Enrolling face', `Image: ${enrollmentImage}, Name: ${personName}`);
+
     if (!enrollmentImage || !personName.trim()) {
       Alert.alert('Error', 'Please select an image and enter a person name');
       return;
@@ -64,8 +66,8 @@ const FaceRecognitionScreen: React.FC = () => {
     setEnrollmentMessage('');
 
     try {
-      // Using mock implementation for demo
-      const result: EnrollmentResult = await faceRecognitionService.enrollFaceMock(
+      // Use real AWS backend implementation
+      const result: EnrollmentResult = await faceRecognitionService.enrollFace(
         enrollmentImage,
         personName.trim()
       );
@@ -101,8 +103,8 @@ const FaceRecognitionScreen: React.FC = () => {
     setRecognitionResults([]);
 
     try {
-      // Using mock implementation for demo
-      const result: RecognitionResult = await faceRecognitionService.recognizeFaceMock(
+      // Use real AWS backend implementation
+      const result: RecognitionResult = await faceRecognitionService.recognizeFace(
         recognitionImage,
         parseFloat(threshold)
       );
@@ -123,7 +125,7 @@ const FaceRecognitionScreen: React.FC = () => {
   };
 
   const renderEnrolledPerson = ({ item }: { item: EnrolledPerson }) => (
-    <View style={styles.enrolledPersonItem}>
+    <View style={styles.enrolledPersonContainer}>
       <Image
         source={{ uri: item.imageUri }}
         style={styles.enrolledPersonImage}
@@ -155,17 +157,20 @@ const FaceRecognitionScreen: React.FC = () => {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.mainRow}>
+        <View style={width > 768 ? styles.desktopLayout : styles.mobileLayout}>
           {/* Enrollment Side */}
-          <View style={styles.column}>
+          <View style={styles.sectionContainer}>
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Enroll Person</Text>
+              <Text style={styles.sectionTitle}>Enroll Person</Text>
               
               <TouchableOpacity
-                onPress={() => pickImage('enrollment')}
-                style={styles.primaryButton}
+                onPress={() => {
+                  console.log("Picking enrollment image");
+                  pickImage('enrollment');
+                }}
+                style={styles.selectImageButton}
               >
-                <Text style={styles.buttonText}>
+                <Text style={styles.selectImageButtonText}>
                   Select Image to Enroll
                 </Text>
               </TouchableOpacity>
@@ -173,7 +178,10 @@ const FaceRecognitionScreen: React.FC = () => {
               {enrollmentImage && (
                 <Image
                   source={{ uri: enrollmentImage }}
-                  style={styles.imagePreview}
+                  style={[
+                    styles.selectedImage,
+                    { height: width > 768 ? 200 : 180 }
+                  ]}
                   resizeMode="cover"
                 />
               )}
@@ -187,19 +195,21 @@ const FaceRecognitionScreen: React.FC = () => {
               />
 
               <TouchableOpacity
-                onPress={enrollFace}
+                onPress={() => {
+                  console.log('Enrolling face with image:', enrollmentImage, 'and name:', personName);
+                  enrollFace();
+                }}
                 disabled={isEnrolling || !enrollmentImage || !personName.trim()}
                 style={[
-                  styles.button,
-                  (isEnrolling || !enrollmentImage || !personName.trim()) 
-                    ? styles.disabledButton 
-                    : styles.successButton
+                  styles.actionButton,
+                  styles.enrollButton,
+                  (isEnrolling || !enrollmentImage || !personName.trim()) && styles.disabledButton
                 ]}
               >
                 {isEnrolling ? (
                   <ActivityIndicator color="white" />
                 ) : (
-                  <Text style={styles.buttonText}>
+                  <Text style={styles.actionButtonText}>
                     Enroll Face
                   </Text>
                 )}
@@ -214,15 +224,15 @@ const FaceRecognitionScreen: React.FC = () => {
           </View>
 
           {/* Recognition Side */}
-          <View style={styles.column}>
+          <View style={styles.sectionContainer}>
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Recognize Face</Text>
+              <Text style={styles.sectionTitle}>Recognize Face</Text>
               
               <TouchableOpacity
                 onPress={() => pickImage('recognition')}
-                style={styles.secondaryButton}
+                style={styles.recognizeImageButton}
               >
-                <Text style={styles.buttonText}>
+                <Text style={styles.selectImageButtonText}>
                   Select Image to Test
                 </Text>
               </TouchableOpacity>
@@ -230,14 +240,17 @@ const FaceRecognitionScreen: React.FC = () => {
               {recognitionImage && (
                 <Image
                   source={{ uri: recognitionImage }}
-                  style={styles.imagePreview}
+                  style={[
+                    styles.selectedImage,
+                    { height: width > 768 ? 200 : 180 }
+                  ]}
                   resizeMode="cover"
                 />
               )}
 
               <View style={styles.thresholdContainer}>
                 <Text style={styles.thresholdLabel}>
-                  Confidence Threshold: {threshold}%
+                  Similarity Threshold: {threshold}%
                 </Text>
                 <TextInput
                   style={styles.textInput}
@@ -253,56 +266,64 @@ const FaceRecognitionScreen: React.FC = () => {
                 onPress={recognizeFace}
                 disabled={isRecognizing || !recognitionImage}
                 style={[
-                  styles.button,
-                  (isRecognizing || !recognitionImage) 
-                    ? styles.disabledButton 
-                    : styles.dangerButton
+                  styles.actionButton,
+                  styles.recognizeButton,
+                  (isRecognizing || !recognitionImage) && styles.disabledButton
                 ]}
               >
                 {isRecognizing ? (
                   <ActivityIndicator color="white" />
                 ) : (
-                  <Text style={styles.buttonText}>
+                  <Text style={styles.actionButtonText}>
                     Recognize Face
                   </Text>
                 )}
               </TouchableOpacity>
+
+              {/* Recognition Results */}
+              {recognitionResults.length > 0 && (
+                <View style={styles.resultsContainer}>
+                  <Text style={styles.resultsTitle}>
+                    Recognition Results
+                  </Text>
+                  {recognitionResults.map((match, index) => (
+                    <View
+                      key={index}
+                      style={[
+                        styles.resultItem,
+                        index < recognitionResults.length - 1 && styles.resultItemBorder
+                      ]}
+                    >
+                      <Text style={styles.resultName}>
+                        {match.externalImageId}
+                      </Text>
+                      <Text style={styles.resultDetail}>
+                        Similarity: {match.similarity.toFixed(1)}%
+                      </Text>
+                      <Text style={styles.resultDetail}>
+                        Confidence: {match.confidence.toFixed(1)}%
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
           </View>
         </View>
 
-        {/* Results Section */}
-        {recognitionResults.length > 0 && (
-          <View style={styles.resultsCard}>
-            <Text style={styles.cardTitle}>Recognition Results</Text>
-            
-            {recognitionResults.map((match, index) => (
-              <View key={index} style={styles.resultItem}>
-                <Text style={styles.resultName}>
-                  {match.externalImageId}
-                </Text>
-                <Text style={styles.resultDetail}>
-                  Similarity: {match.similarity.toFixed(2)}%
-                </Text>
-                <Text style={styles.resultDetail}>
-                  Confidence: {match.confidence.toFixed(2)}%
-                </Text>
-              </View>
-            ))}
-          </View>
-        )}
-
-        {/* Enrolled People Modal */}
+        {/* Modal for Enrolled People */}
         <Modal
           visible={showEnrolledModal}
-          animationType="slide"
           transparent={true}
+          animationType="slide"
           onRequestClose={() => setShowEnrolledModal(false)}
         >
           <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Enrolled People</Text>
+                <Text style={styles.modalTitle}>
+                  Enrolled People
+                </Text>
                 <TouchableOpacity
                   onPress={() => setShowEnrolledModal(false)}
                   style={styles.closeButton}
@@ -312,12 +333,14 @@ const FaceRecognitionScreen: React.FC = () => {
               </View>
               
               {enrolledPeople.length === 0 ? (
-                <Text style={styles.noEnrolledText}>No people enrolled yet</Text>
+                <Text style={styles.emptyMessage}>
+                  No people enrolled yet
+                </Text>
               ) : (
                 <FlatList
                   data={enrolledPeople}
                   renderItem={renderEnrolledPerson}
-                  keyExtractor={(item, index) => index.toString()}
+                  keyExtractor={(item: EnrolledPerson, index: number) => index.toString()}
                   style={styles.enrolledList}
                 />
               )}
@@ -328,6 +351,8 @@ const FaceRecognitionScreen: React.FC = () => {
     </ScrollView>
   );
 };
+
+export default FaceRecognitionScreen;
 
 const styles = StyleSheet.create({
   container: {
@@ -341,12 +366,13 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 20,
     color: '#1F2937',
   },
   headerRow: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 16,
   },
   viewEnrolledButton: {
@@ -359,78 +385,65 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: '500',
   },
-  mainRow: {
-    flexDirection: width > 768 ? 'row' : 'column',
+  desktopLayout: {
+    flexDirection: 'row',
     gap: 16,
   },
-  column: {
+  mobileLayout: {
+    flexDirection: 'column',
+    gap: 16,
+  },
+  sectionContainer: {
     flex: 1,
-    marginHorizontal: width > 768 ? 4 : 0,
+    marginHorizontal: 4,
   },
   card: {
     backgroundColor: 'white',
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 16,
-    marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
       height: 2,
     },
     shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 3,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
-  cardTitle: {
+  sectionTitle: {
     fontSize: 18,
     fontWeight: '600',
     marginBottom: 16,
     color: '#374151',
   },
-  button: {
-    borderRadius: 8,
+  selectImageButton: {
+    backgroundColor: '#2563EB',
     padding: 12,
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  primaryButton: {
-    backgroundColor: '#3B82F6',
-    borderRadius: 8,
-    padding: 12,
+    borderRadius: 6,
     alignItems: 'center',
     marginBottom: 16,
   },
-  secondaryButton: {
-    backgroundColor: '#8B5CF6',
-    borderRadius: 8,
+  recognizeImageButton: {
+    backgroundColor: '#7C3AED',
     padding: 12,
+    borderRadius: 6,
     alignItems: 'center',
     marginBottom: 16,
   },
-  successButton: {
-    backgroundColor: '#10B981',
-  },
-  dangerButton: {
-    backgroundColor: '#EF4444',
-  },
-  disabledButton: {
-    backgroundColor: '#9CA3AF',
-  },
-  buttonText: {
+  selectImageButtonText: {
     color: 'white',
     fontWeight: '500',
   },
-  imagePreview: {
+  selectedImage: {
     width: '100%',
-    height: width > 768 ? 200 : 180,
-    borderRadius: 8,
+    borderRadius: 6,
     marginBottom: 16,
     maxHeight: 300,
   },
   textInput: {
     borderWidth: 1,
     borderColor: '#D1D5DB',
-    borderRadius: 8,
+    borderRadius: 6,
     padding: 12,
     marginBottom: 16,
     color: '#374151',
@@ -442,14 +455,33 @@ const styles = StyleSheet.create({
     color: '#374151',
     marginBottom: 8,
   },
+  actionButton: {
+    padding: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  enrollButton: {
+    backgroundColor: '#059669',
+  },
+  recognizeButton: {
+    backgroundColor: '#D97706',
+  },
+  disabledButton: {
+    backgroundColor: '#9CA3AF',
+  },
+  actionButtonText: {
+    color: 'white',
+    fontWeight: '500',
+  },
   successMessage: {
     marginTop: 8,
-    color: '#10B981',
+    color: '#059669',
     textAlign: 'center',
   },
-  resultsCard: {
+  resultsContainer: {
     backgroundColor: 'white',
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 16,
     shadowColor: '#000',
     shadowOffset: {
@@ -457,14 +489,23 @@ const styles = StyleSheet.create({
       height: 2,
     },
     shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 3,
+    shadowRadius: 3.84,
+    elevation: 5,
+    marginTop: 16,
+  },
+  resultsTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 16,
+    color: '#1F2937',
   },
   resultItem: {
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
     paddingBottom: 12,
     marginBottom: 12,
+  },
+  resultItemBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
   resultName: {
     fontSize: 16,
@@ -475,7 +516,6 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     marginTop: 2,
   },
-  // Modal styles
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
@@ -484,7 +524,7 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     backgroundColor: 'white',
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 20,
     width: '90%',
     maxWidth: 500,
@@ -508,7 +548,7 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: '#6B7280',
   },
-  noEnrolledText: {
+  emptyMessage: {
     textAlign: 'center',
     color: '#6B7280',
     fontSize: 16,
@@ -517,7 +557,7 @@ const styles = StyleSheet.create({
   enrolledList: {
     maxHeight: 400,
   },
-  enrolledPersonItem: {
+  enrolledPersonContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 12,
@@ -544,5 +584,3 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
-
-export default FaceRecognitionScreen;

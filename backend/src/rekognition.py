@@ -20,18 +20,7 @@ from pathlib import Path
 # Add the parent directory to Python path to import the FaceRecognitionSystem
 sys.path.append(str(Path(__file__).parent.parent))
 
-try:
-    # Try to import from parent directory
-    sys.path.append(str(Path(__file__).parent.parent / "Cloak-Comparison"))
-    from fawkes_rekognition_test import FaceRecognitionSystem
-except ImportError:
-    try:
-        # Try alternative import path
-        sys.path.append(str(Path(__file__).parent.parent))
-        from fawkes_rekognition_test import FaceRecognitionSystem
-    except ImportError:
-        print("Warning: Could not import FaceRecognitionSystem. Using mock implementation.")
-        FaceRecognitionSystem = None
+from services.fawkes_rekognition import FaceRecognitionSystem
 
 app = Flask(__name__)
 CORS(app)
@@ -44,17 +33,17 @@ COLLECTION_ID = os.getenv('COLLECTION_ID', 'my-face-collection')
 
 # Initialize face recognition system
 face_system = None
-if FaceRecognitionSystem:
-    try:
-        face_system = FaceRecognitionSystem(PROFILE_NAME, REGION)
-        print(f"Initialized AWS Rekognition with profile: {PROFILE_NAME}, region: {REGION}")
-    except Exception as e:
-        print(f"Error initializing AWS Rekognition: {e}")
+try:
+    face_system = FaceRecognitionSystem(PROFILE_NAME, REGION)
+    print(f"Initialized AWS Rekognition with profile: {PROFILE_NAME}, region: {REGION}")
+except Exception as e:
+    print(f"Error initializing AWS Rekognition: {e}")
 
 def upload_to_s3(image_bytes, filename):
     """Upload image bytes to S3 bucket"""
     try:
-        s3_client = boto3.client('s3', region_name=REGION)
+        session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION)
+        s3_client = session.client('s3')
         s3_client.put_object(
             Bucket=BUCKET_NAME,
             Key=filename,
@@ -66,12 +55,24 @@ def upload_to_s3(image_bytes, filename):
         print(f"Error uploading to S3: {e}")
         return False
 
+def cleanup_s3_file(filename):
+    """Clean up temporary files from S3"""
+    try:
+        session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION)
+        s3_client = session.client('s3')
+        s3_client.delete_object(Bucket=BUCKET_NAME, Key=filename)
+        print(f"Cleaned up temporary file: {filename}")
+    except Exception as e:
+        print(f"Error cleaning up S3 file {filename}: {e}")
+
 @app.route('/api/enroll-face', methods=['POST'])
 def enroll_face():
+    print("Received request to enroll face")
+    s3_filename = None
     try:
         data = request.json
         image_data = data.get('imageData')  # Base64 encoded image
-        person_name = data.get('personName')
+        person_name = data.get('personName').replace(' ', '_')  # Normalize name for S3 filename
         
         if not image_data or not person_name:
             return jsonify({
@@ -91,6 +92,29 @@ def enroll_face():
         else:
             image_bytes = base64.b64decode(image_data)
         
+        # Ensure collection exists
+        face_system.create_collection(COLLECTION_ID)
+        
+        # Check if this person already exists in the collection
+        try:
+            existing_faces = face_system.list_faces_in_collection(COLLECTION_ID)
+            existing_person = None
+            for face in existing_faces:
+                if face.get('ExternalImageId') == person_name:
+                    existing_person = face
+                    break
+            
+            if existing_person:
+                return jsonify({
+                    'success': True,
+                    'facesIndexed': 1,
+                    'faceId': existing_person['FaceId'],
+                    'message': f'{person_name} already exists in collection, using existing face'
+                })
+        except Exception as e:
+            print(f"Error checking existing faces: {e}")
+            # Continue with enrollment if we can't check existing faces
+        
         # Generate S3 filename
         s3_filename = f"{person_name}_{int(time.time())}.jpg"
         
@@ -100,9 +124,6 @@ def enroll_face():
                 'success': False,
                 'message': 'Failed to upload image to S3'
             }), 500
-        
-        # Ensure collection exists
-        face_system.create_collection(COLLECTION_ID)
         
         # Add face to collection
         faces_indexed = face_system.add_faces_to_collection(
@@ -115,6 +136,7 @@ def enroll_face():
         return jsonify({
             'success': faces_indexed > 0,
             'facesIndexed': faces_indexed,
+            'faceId': f"{person_name}_{int(time.time())}" if faces_indexed > 0 else None,
             'message': f'Successfully enrolled {person_name}' if faces_indexed > 0 else 'No faces detected'
         })
         
@@ -124,9 +146,14 @@ def enroll_face():
             'success': False,
             'message': 'Internal server error'
         }), 500
+    finally:
+        # Clean up temporary S3 file after enrollment
+        if s3_filename:
+            cleanup_s3_file(s3_filename)
 
 @app.route('/api/recognize-face', methods=['POST'])
 def recognize_face():
+    s3_filename = None
     try:
         data = request.json
         image_data = data.get('imageData')  # Base64 encoded image
@@ -190,9 +217,14 @@ def recognize_face():
             'success': False,
             'message': 'Internal server error'
         }), 500
+    finally:
+        # Clean up temporary S3 file after recognition
+        if s3_filename:
+            cleanup_s3_file(s3_filename)
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
+    print("Received health check request")
     return jsonify({
         'status': 'healthy',
         'rekognition_available': face_system is not None,
