@@ -20,7 +20,7 @@ from pathlib import Path
 # Add the parent directory to Python path to import the FaceRecognitionSystem
 sys.path.append(str(Path(__file__).parent.parent))
 
-from services.fawkes_rekognition import FaceRecognitionSystem
+from fawkes_rekognition_test import FaceRecognitionSystem
 
 app = Flask(__name__)
 CORS(app)
@@ -150,6 +150,44 @@ def enroll_face():
         # Clean up temporary S3 file after enrollment
         if s3_filename:
             cleanup_s3_file(s3_filename)
+
+@app.route('/api/enrolled-people', methods=['GET'])
+def get_enrolled_people():
+    """Get list of enrolled people from the collection"""
+    try:
+        if not face_system:
+            return jsonify({
+                'success': False,
+                'message': 'AWS Rekognition not available'
+            }), 500
+        
+        # List faces in collection
+        faces = face_system.list_faces_in_collection(COLLECTION_ID)
+        
+        # Group faces by ExternalImageId (person name) and get the most recent one for each person
+        people_map = {}
+        for face in faces:
+            external_id = face.get('ExternalImageId')
+            if external_id and external_id not in people_map:
+                people_map[external_id] = {
+                    'name': external_id.replace('_', ' '),  # Convert back from normalized name
+                    'faceId': face['FaceId'],
+                    'enrolledAt': face.get('CreationTimestamp', '').isoformat() if face.get('CreationTimestamp') else None
+                }
+        
+        enrolled_people = list(people_map.values())
+        
+        return jsonify({
+            'success': True,
+            'enrolledPeople': enrolled_people
+        })
+        
+    except Exception as e:
+        print(f"Error getting enrolled people: {e}")
+        return jsonify({
+            'success': False,
+            'message': 'Failed to fetch enrolled people'
+        }), 500
 
 @app.route('/api/recognize-face', methods=['POST'])
 def recognize_face():

@@ -12,6 +12,18 @@ export interface EnrollmentResult {
   message?: string;
 }
 
+export interface EnrolledPerson {
+  name: string;
+  imageUri: string;
+  enrolledAt: Date | null;
+}
+
+export interface EnrolledPeopleResult {
+  success: boolean;
+  enrolledPeople: EnrolledPerson[];
+  message?: string;
+}
+
 export interface RecognitionResult {
   success: boolean;
   matches: FaceMatch[];
@@ -122,6 +134,32 @@ class FaceRecognitionService {
     } catch (error) {
       console.error('Health check failed:', error);
       return false;
+    }
+  }
+
+  async getEnrolledPeople(): Promise<EnrolledPeopleResult> {
+    try {
+      const response = await fetch(`${this.backendUrl}/api/enrolled-people`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const result = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(result.message || 'Failed to fetch enrolled people');
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error fetching enrolled people:', error);
+      return {
+        success: false,
+        enrolledPeople: [],
+        message: 'Failed to fetch enrolled people. Please try again.',
+      };
     }
   }
 }

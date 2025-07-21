@@ -14,15 +14,9 @@ import {
   StyleSheet,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import faceRecognitionService, { FaceMatch, EnrollmentResult, RecognitionResult } from '../services/faceRecognition';
+import faceRecognitionService, { FaceMatch, EnrollmentResult, RecognitionResult, EnrolledPerson } from '../services/faceRecognition';
 
 const { width } = Dimensions.get('window');
-
-interface EnrolledPerson {
-  name: string;
-  imageUri: string;
-  enrolledAt: Date;
-}
 
 const FaceRecognitionScreen: React.FC = () => {
   const [enrollmentImage, setEnrollmentImage] = useState<string | null>(null);
@@ -35,6 +29,29 @@ const FaceRecognitionScreen: React.FC = () => {
   const [enrollmentMessage, setEnrollmentMessage] = useState<string>('');
   const [enrolledPeople, setEnrolledPeople] = useState<EnrolledPerson[]>([]);
   const [showEnrolledModal, setShowEnrolledModal] = useState<boolean>(false);
+
+
+ useEffect(() => {
+    loadEnrolledPeople();
+  }, []);
+
+  const loadEnrolledPeople = async () => {
+    try {
+      const result = await faceRecognitionService.getEnrolledPeople();
+      if (result.success) {
+        // Convert the enrolled people to match the local interface
+        const localEnrolledPeople: EnrolledPerson[] = result.enrolledPeople.map(person => ({
+          name: person.name,
+          imageUri: '', // We don't have image URIs from the backend, so use empty string
+          enrolledAt: person.enrolledAt ? new Date(person.enrolledAt) : new Date(),
+        }));
+        setEnrolledPeople(localEnrolledPeople);
+      }
+    } catch (error) {
+      console.error('Error loading enrolled people:', error);
+    }
+  };
+
 
   const pickImage = async (type: 'enrollment' | 'recognition') => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -83,6 +100,8 @@ const FaceRecognitionScreen: React.FC = () => {
         setEnrolledPeople(prev => [...prev, newPerson]);
         setPersonName('');
         setEnrollmentImage(null);
+        
+        await loadEnrolledPeople();
       } else {
         Alert.alert('Error', result.message || 'Failed to enroll face');
       }
@@ -126,16 +145,26 @@ const FaceRecognitionScreen: React.FC = () => {
 
   const renderEnrolledPerson = ({ item }: { item: EnrolledPerson }) => (
     <View style={styles.enrolledPersonContainer}>
-      <Image
-        source={{ uri: item.imageUri }}
-        style={styles.enrolledPersonImage}
-        resizeMode="cover"
-      />
+      {item.imageUri ? (
+        <Image
+          source={{ uri: item.imageUri }}
+          style={styles.enrolledPersonImage}
+          resizeMode="cover"
+        />
+      ) : (
+        <View style={[styles.enrolledPersonImage, styles.placeholderImage]}>
+          <Text style={styles.placeholderText}>
+            {item.name.charAt(0).toUpperCase()}
+          </Text>
+        </View>
+      )}
       <View style={styles.enrolledPersonInfo}>
         <Text style={styles.enrolledPersonName}>{item.name}</Text>
-        <Text style={styles.enrolledPersonDate}>
-          Enrolled: {item.enrolledAt.toLocaleDateString()}
-        </Text>
+        {item.enrolledAt != null && (
+          <Text style={styles.enrolledPersonDate}>
+        Enrolled: {item.enrolledAt.toLocaleDateString()}
+          </Text>
+        )}
       </View>
     </View>
   );
@@ -582,5 +611,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#6B7280',
     marginTop: 4,
+  },
+  placeholderImage: {
+    backgroundColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  placeholderText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#6B7280',
   },
 });
