@@ -12,58 +12,72 @@ class CloakingLibrary:
     # Supported video formats
     SUPPORTED_VIDEO_FORMATS = ['.mp4', '.avi', '.mov', '.wmv']
 
-    DATASET_REQUIREMENTS = { #TODO: Change this to actual numbers
+    DATASET_REQUIREMENTS = { #TODO: CHANGED to total sample (Cloaked+Uncloaked - numbers not divisible by 4)
         "Images": {
             "Age": {
-                "U13": 100,
-                "Teen": 100,
-                "Adult": 100,
-                "Above60": 100
+                "U13": 50,
+                "Teen": 75,
+                "Adult": 325,
+                "Above60": 50
                 },
             "Expression": {
-                "Smiling": 100,
-                "Neutral": 100,
+                "Smiling": 225,
+                "Neutral": 175,
                 "Other": 100
             },
             "Gender": {
-                "M": 100,
-                "F": 100,
-                "Other": 100
+                "M": 225,
+                "F": 225,
+                "Other": 25
             },
             "Groups": {
-                "Multiple": 100,
-                "Single": 100
+                "Multiple": 150,
+                "Single": 350
             },
             "Obstruction": {
-                "NoObstruction": 100,
+                "NoObstruction": 400,
                 "WithObstruction": 100
+            },
+            "Race": {
+                "White": 100,
+                "Brown": 145,
+                "East Asian": 115,
+                "Black": 75,
+                "Other": 15
             }
         },
 
         "Videos": {
             "Age": {
-                "U13": 100,
-                "Teen": 100,
-                "Adult": 100,
-                "Above60": 100
+                "U13": 50,
+                "Teen": 75,
+                "Adult": 325,
+                "Above60": 50
                 },
             "Expression": {
-                "Smiling": 100,
-                "Neutral": 100,
+                "Smiling": 225,
+                "Neutral": 175,
                 "Other": 100
             },
             "Gender": {
-                "M": 100,
-                "F": 100,
-                "Other": 100
+                "M": 225,
+                "F": 225,
+                "Other": 25
             },
             "Groups": {
-                "Multiple": 100,
-                "Single": 100
+                "Multiple": 150,
+                "Single": 350
             },
             "Obstruction": {
-                "NoObstruction": 100,
+                "NoObstruction": 400,
                 "WithObstruction": 100
+            },
+            "Race": {
+                "White": 100,
+                "Brown": 145,
+                "East Asian": 115,
+                "Black": 75,
+                "Other": 15
             }
         }
     }
@@ -272,5 +286,3 @@ class CloakingLibrary:
             json.dump(file_data, f, indent=4)
 
         return True
-            
-
