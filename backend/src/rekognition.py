@@ -16,6 +16,10 @@ from collections import defaultdict
 import tempfile
 import base64
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add the parent directory to Python path to import the FaceRecognitionSystem
 sys.path.append(str(Path(__file__).parent.parent))

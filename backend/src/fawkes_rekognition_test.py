@@ -4,8 +4,11 @@
 import boto3
 from botocore.exceptions import ClientError
 import json
+import os
 boto3.client('rekognition', region_name='eu-west-2')
 from collections import defaultdict
+from dotenv import load_dotenv
+import argparse
 
 class FaceRecognitionSystem:
     def __init__(self, profile_name='default', region='eu-west-2'):
@@ -162,12 +165,40 @@ class FaceRecognitionSystem:
 
         print(f" FaceId map saved to {json_filename}")
 
+    def upload_to_s3(self, image_bytes, filename, profile_name='default', region='eu-west-2', bucket_name='cloakingbucket'):
+        """Upload image bytes to S3 bucket"""
+        try:
+            session = boto3.Session(profile_name=profile_name, region_name=region)
+            s3_client = session.client('s3')
+            s3_client.put_object(
+                Bucket=bucket_name,
+                Key=filename,
+                Body=image_bytes,
+                ContentType='image/jpeg'
+            )
+            return True
+        except Exception as e:
+            print(f"Error uploading to S3: {e}")
+            return False
+
 def main():
+    parser = argparse.ArgumentParser(description="Test images against amazon rekognition")
+    parser.add_argument("--add", action="store_true", help="Add faces to collection")
+    args = parser.parse_args()
+
+
+
     # Configuration
-    bucket = 'cloakingbucket' 
-    collection_id = 'my-face-collection'
-    profile_name = 'sajida_config'  
-    
+    load_dotenv()  # Load environment variables from .env file
+
+    bucket = os.getenv("AWS_BUCKET_NAME", 'cloakingbucket')
+    collection_id = os.getenv("COLLECTION_ID", 'my-face-collection')
+    profile_name = os.getenv("AWS_PROFILE_NAME", 'sajida_config')
+
+    print(f"Using bucket: {bucket}")
+    print(f"Using collection ID: {collection_id}")
+    print(f"Using AWS profile: {profile_name}")
+
     # Initialize the face recognition system
     face_system = FaceRecognitionSystem(profile_name=profile_name)
     
@@ -179,45 +210,45 @@ def main():
     print("\nStep 2: Listing collections...")
     face_system.list_collections()
     
-    # Step 3: Add faces to collection (enrollment phase)
-    print("\nStep 3: Adding faces to collection...")
-    # Create Image IDs (Names) using images uploaded in S3 AWS Console
-    enrollment_images = [
-        ('BellaRamsey_photo1.jpg', 'Bella_Ramsey'),
-        ('TheRock_photo1.jpeg', 'The_Rock'),
-        ('ronaldo1.jpeg', 'Cristiano_Ronaldo'),
-        ('Ronaldo2.jpg', 'Cristiano_Ronaldo'),
-        ('Ronaldo3.jpg', 'Cristiano_Ronaldo'),
-        ('selenagomez1_cloaked_mid.jpg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez3_cloaked_mid.jpg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez4_cloaked_mid.jpg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez5_cloaked_mid.jpg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez6_cloaked_mid.jpeg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez7_cloaked_mid.jpg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez8_cloaked_mid.jpg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez9_cloaked_mid.jpg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez10_cloaked_mid.jpg', 'Selena_Gomez_Cloaked'),
-        ('selenagomez1.jpg', 'Selena_Gomez_Raw'),
-        ('selenagomez3.jpg', 'Selena_Gomez_Raw'),
-        ('selenagomez4.jpg', 'Selena_Gomez_Raw'),
-        ('selenagomez5.jpg', 'Selena_Gomez_Raw'),
-        ('selenagomez6.jpeg', 'Selena_Gomez_Raw'),
-        ('selenagomez7.jpg', 'Selena_Gomez_Raw'),
-        ('selenagomez8.jpg', 'Selena_Gomez_Raw'),
-        ('selenagomez9.jpg', 'Selena_Gomez_Raw'),
-        ('selenagomez10.jpg', 'Selena_Gomez_Raw')
-    ]
-    
-    total_faces_indexed = 0
-    for photo, person_name in enrollment_images:
-        print(f"\nEnrolling {person_name}...")
-        indexed_count = face_system.add_faces_to_collection(bucket, photo, collection_id, person_name)
-        total_faces_indexed += indexed_count
-    
-    print(f"\nTotal faces indexed: {total_faces_indexed}")
+    if args.add:
+        # Step 3: Add faces to collection (enrollment phase)
+        print("\nAdding faces to collection since add flag was selected...")
+        # Create Image IDs (Names) using images uploaded in S3 AWS Console
+        enrollment_images = []
+
+        # Define the folders and corresponding names
+        people_folders = {
+            'Will Smith Cloaked Low': 'Will_Smith',
+            #'Jennifer Lawrence': 'Jennifer_Lawrence'
+        }
+
+        # Get the current directory (where this script is located)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        for folder, person_name in people_folders.items():
+            folder_path = os.path.join(base_dir, folder)
+            if not os.path.isdir(folder_path):
+                print(f"Warning: Folder '{folder_path}' does not exist.")
+                continue
+            for filename in os.listdir(folder_path):
+                file_path = os.path.join(folder_path, filename)
+                if os.path.isfile(file_path):
+                    if face_system.upload_to_s3(open(file_path, 'rb').read(), filename, profile_name=profile_name, region='eu-west-2', bucket_name=bucket):
+                        print(f"Uploaded {filename} to S3 bucket '{bucket}'")
+                        enrollment_images.append((filename, person_name))
+                    else:
+                        print(f"Failed to upload {filename} to S3 bucket '{bucket}'")
+        
+        total_faces_indexed = 0
+        for photo, person_name in enrollment_images:
+            print(f"\nEnrolling {person_name}...")
+            indexed_count = face_system.add_faces_to_collection(bucket, photo, collection_id, person_name)
+            total_faces_indexed += indexed_count
+        
+        print(f"\nTotal faces indexed: {total_faces_indexed}")
     
     # Step 4: List all faces in collection
-    print("\nStep 4: Listing all enrolled faces...")
+    print("\nStep 3: Listing all enrolled faces...")
     face_system.list_faces_in_collection(collection_id)
 
     # Step 4.1:Load saved map
@@ -232,15 +263,16 @@ def main():
 }
 
     # Step 4.2: Create map 
-    print("\nStep 4.2: Creating map...")
+    print("\nStep 3.2: Creating map...")
     face_system.build_and_save_faceid_map(collection_id)
     
     # Step 5: Search for faces (recognition phase)
-    print("\nStep 5: Testing face recognition...")
-    test_images = ['Bella_Ramsey_cloaked_mid.jpeg', 'Ronaldo_test.jpg', 'selena_raw_test.jpg', 'ronaldo_test_cloaked_cloaked_mid.jpg', 'selena_test_cloaked_mid.jpg']
-    
+    print("\nStep 4: Testing face recognition...")
+    test_images = ['will-smith-test.jpg', 'jennifer-lawrence-test.jpg']
+
     for test_image in test_images:
         print(f"\n--- Testing with {test_image} ---")
+        face_system.upload_to_s3(open(test_image, 'rb').read(), test_image, profile_name=profile_name, region='eu-west-2', bucket_name=bucket)
         matches = face_system.search_faces_by_image(bucket, test_image, collection_id)
 
         if not matches:
