@@ -13,5 +13,15 @@ Libraries:
 
 `python image_lib_gen.py [-h] [--batch-size BATCH_SIZE] [--threads THREADS] [--mode {low,mid,high}] [--dir] input_media `
 
-This will process images and videos given as input and add them to the (local) library in appropriate places. Does not delete the original input.
-To process a folder use the `--dir` flag, and give the folder as the input.
+This will process images and videos in the input directory and add them to the (local) library in appropriate places. Does not delete the originals from the input folder.
+
+
+
+# Fawkes and Rekognition demo
+
+Go into frontend and type `npm install`
+
+
+Start the backend server (just have it run in a separate terminal)
+
+In frontend, type `npx expo start --web`
