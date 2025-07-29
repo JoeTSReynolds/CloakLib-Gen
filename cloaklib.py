@@ -95,6 +95,7 @@ class CloakingLibrary:
             base_dir = os.path.dirname(os.path.abspath(__file__))
 
             self.cloaking_lib_dir = os.path.join(base_dir, "CloakingLibrary")
+            os.makedirs(self.cloaking_lib_dir, exist_ok=True)
             self.info_json_path = os.path.join(self.cloaking_lib_dir, "dataset_info.json")
             if not os.path.exists(self.info_json_path):
                 with open(self.info_json_path, "w") as f:
@@ -104,13 +105,6 @@ class CloakingLibrary:
             
             os.makedirs(self.data_dir, exist_ok=True)
 
-            inner_dirs = {
-                'Age': ['U13', 'Teen', 'Adult', 'Above60'],
-                'Gender': ['M', 'F', 'Other'],
-                'Groups': ['Multiple', 'Single'],
-                'Expression': ['Smiling', 'Neutral', 'Other'],
-                'Obstruction': ['NoObstruction', 'WithObstruction']
-            }
 
             #Inner directory paths
             cloaked_dir = os.path.join(self.data_dir, "Cloaked")
@@ -121,12 +115,12 @@ class CloakingLibrary:
 
             for dir_path in [cloaked_dir, original_dir]:
                 os.makedirs(dir_path, exist_ok=True)
-                for img_vid_path in ['Images', 'Videos']:
+                for img_vid_path in self.DATASET_REQUIREMENTS.keys():
                     img_vid_path_dir = os.path.join(dir_path, img_vid_path)
                     os.makedirs(img_vid_path_dir, exist_ok=True)
-                    for classification in ['Age', 'Gender', 'Groups', 'Expression', 'Obstruction']:
+                    for classification in self.DATASET_REQUIREMENTS[img_vid_path].keys():
                         os.makedirs(os.path.join(img_vid_path_dir, classification), exist_ok=True)
-                        for sub_dir in inner_dirs[classification]:
+                        for sub_dir in self.DATASET_REQUIREMENTS[img_vid_path][classification]:
                             os.makedirs(os.path.join(img_vid_path_dir, classification, sub_dir), exist_ok=True)
 
     def get_media_type(self, ext):
@@ -186,9 +180,9 @@ class CloakingLibrary:
             proportion = (count / required_count) if required_count > 0 else 0
             if proportion < lowest:
                 lowest = proportion
-                least_populated = (classification, sub_classification)
+                least_populated = classification
 
-        return self.get_classification(least_populated[0], least_populated[1]) if least_populated else 'none'
+        return least_populated if least_populated else 'none'
 
     def get_unsorted_files(self):
         """Returns a list of unsorted files in the dataset"""
@@ -202,7 +196,78 @@ class CloakingLibrary:
             if entry.get("classifications", None) == []:
                 unsorted_files.append(entry["file_name"])
         
-        return unsorted_files        
+        return unsorted_files      
+
+    def classify_original(self, file_path, classifications):
+        """Finds finds the actual classification from classifications, and moves original and cloaked versions in the info to appropriate folders""" 
+        if not os.path.isfile(file_path):
+            print(f"Error: File '{file_path}' does not exist!")
+            return False
+        
+        # Load info.json
+        with open(self.info_json_path, "r") as f:
+            file_data = json.load(f)
+
+        # Get file extension
+        ext = os.path.splitext(file_path)[1]
+        media_type = self.get_media_type(ext)
+        if media_type == "unsupported":
+            print(f"Unsupported file format: {ext}")
+            return False
+        
+        # Check if classifications are valid
+        for classification in classifications:
+            main_classification, sub_classification = self.get_main_and_sub_classification(classification)
+            if main_classification not in self.DATASET_REQUIREMENTS[media_type.capitalize()+"s"] or sub_classification not in self.DATASET_REQUIREMENTS[media_type.capitalize()+"s"][main_classification]:
+                print(f"Invalid classification: {classification}")
+                return False
+        if not classifications:
+            print("No classifications provided, cannot classify the file.")
+            return False
+
+        # Choose classification
+        actual_classification = self.choose_classification(media_type, classifications)
+
+        # Find the original file entry
+        original_file_name = os.path.basename(file_path)
+        for entry in file_data:
+            if entry["file_name"] == original_file_name and entry["media_type"] == media_type:
+                entry["classifications"] = classifications
+                entry["actual_classification"] = actual_classification
+
+                # Move original file to the appropriate classification folder
+                main_classification, sub_classification = self.get_main_and_sub_classification(actual_classification)
+                
+                new_path = os.path.join(self.data_dir, "Uncloaked", media_type.capitalize()+"s", main_classification, sub_classification, original_file_name)
+                # Move the original file
+                original_path = os.path.join(self.unsorted_dir, original_file_name)
+                if os.path.exists(original_path):
+                    shutil.move(original_path, new_path)
+                    print(f"Moved original file {original_file_name} to {new_path}")
+            
+            elif entry.get("original_file_name", None) == original_file_name and entry["cloak_level"] != "none":
+                print(f"Found cloaked file entry for {original_file_name}, updating classification and moving file...")
+
+                # Move cloaked file to the appropriate classification folder
+                cloaked_file_name = entry["file_name"]
+                
+                # Get the main and sub classifications
+                main_classification, sub_classification = self.get_main_and_sub_classification(actual_classification)
+                
+                # Determine the new path for the cloaked file
+                new_cloaked_path = os.path.join(self.data_dir, "Cloaked", media_type.capitalize()+"s", main_classification, sub_classification, cloaked_file_name)
+                
+                # Move the cloaked file
+                original_cloaked_path = os.path.join(self.unsorted_dir, cloaked_file_name)
+                if os.path.exists(original_cloaked_path):
+                    shutil.move(original_cloaked_path, new_cloaked_path)
+                    print(f"Moved cloaked file {cloaked_file_name} to {new_cloaked_path}")
+
+        # Save updated info.json
+        with open(self.info_json_path, "w") as f:
+            json.dump(file_data, f, indent=4)
+
+        return True
     
     def add_to_library(self, original_file_path, cloaked_file_path, cloaking_level, person_name, classifications=[]):
         """Adds a compatible image or video to the library"""

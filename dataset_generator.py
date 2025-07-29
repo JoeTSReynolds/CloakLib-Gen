@@ -397,7 +397,7 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high"):
 ### PUBLIC FUNCTIONS ###
 # These functions can be called from other scripts or modules
 
-def cloak_folder(input_dir, age, expression, gender, single_person, obstructed, cloaking_mode='mid', parent_directory=False):
+def cloak_folder(input_dir, age=None, expression=None, gender=None, single_person=None, obstructed=None, cloaking_mode='mid', parent_directory=False):
     """Main function to cloak a folder of images/videos"""
     # Determine the directory to check based on parent_directory flag
     if parent_directory:
@@ -437,9 +437,13 @@ def cloak_folder(input_dir, age, expression, gender, single_person, obstructed, 
         print("Expression: Smiling, Neutral, Other")
         print("Gender: M, F, Other")
         print("Groups: Single, Multiple")
-        print("Obstructed: True, False")
+        print("Obstruction: WithObstruction, NoObstruction")
+        print("Race: White, Brown, Black, EastAsian, Other")
         print("Example: python dataset_generator.py classify /path/to/file.png Age:Adult Expression:Smiling")
 
+
+def classify_file(file_path, classifications):
+    cloaking_library_instance.classify_original(file_path, classifications)
         
 
 
