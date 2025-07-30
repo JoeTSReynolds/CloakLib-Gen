@@ -83,7 +83,7 @@ def process_image_batch(image_paths, fawkes_protector, batch_id=0):
         # Copy results to appropriate directories
         for i, image_path in enumerate(image_paths):
             print("Adding to library:", image_path)
-            if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, "Tom_Hanks"): # TODO: change this
+            if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, "Tom_Hanks"): #CHANGE TO NAME WANTED & TODO:CHANGE TO THIS
                 success_count += 1
 
         shutil.rmtree(temp_dir)
@@ -392,8 +392,6 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high"):
     print(f"Skipped: {len(all_files) - len(image_files) - len(convertible_files) - len(video_files)} unsupported files")
     print("="*50)
 
-
-
 ### PUBLIC FUNCTIONS ###
 # These functions can be called from other scripts or modules
 
@@ -444,7 +442,8 @@ def cloak_folder(input_dir, age=None, expression=None, gender=None, single_perso
 
 def classify_file(file_path, classifications):
     cloaking_library_instance.classify_original(file_path, classifications)
-        
+
+
 
 
 def main():
@@ -455,6 +454,13 @@ def main():
     parser.add_argument("--threads", type=int, default=1, help="Number of threads to use for processing")
     parser.add_argument("--mode", type=str, default="mid", choices=["low", "mid", "high"], 
                        help="Fawkes protection mode")
+    parser.add_argument("--name", type=str, default=None, help="Name of the person (e.g., Beyonce)")
+    parser.add_argument("--age", type=str, choices=["U13", "Teen", "Adult", "Above60"], help="Age category")
+    parser.add_argument("--expression", type=str, choices=["Smiling", "Neutral", "Other"], help="Facial expression")
+    parser.add_argument("--gender", type=str, choices=["M", "F", "Other"], help="Gender")
+    parser.add_argument("--single", type=str, choices=["Single", "Multiple"], help="Specify if image has a single person")
+    parser.add_argument("--Obstruction", type=str, choices=["NoObstruction", "WithObstruction"], help="Specify if there is NoObstruction or WithObstruction")
+
     args = parser.parse_args()
     
     # Get absolute paths
