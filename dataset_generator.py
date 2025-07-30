@@ -8,7 +8,6 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from cloaklib import CloakingLibrary
-from fawkes.protection import Fawkes
 
 cloaking_library_instance = CloakingLibrary()
 
@@ -53,7 +52,7 @@ def is_video_supported(file_path):
     file_ext = os.path.splitext(file_path)[1].lower()
     return file_ext in cloaking_library_instance.SUPPORTED_VIDEO_FORMATS
 
-def process_image_batch(image_paths, fawkes_protector, batch_id=0):
+def process_image_batch(image_paths, fawkes_protector, batch_id=0, classifications=[], name=""):
     """Process a batch of images with Fawkes"""
     try:
         # Create temporary directory for this batch
@@ -83,7 +82,7 @@ def process_image_batch(image_paths, fawkes_protector, batch_id=0):
         # Copy results to appropriate directories
         for i, image_path in enumerate(image_paths):
             print("Adding to library:", image_path)
-            if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, "Tom_Hanks"): #CHANGE TO NAME WANTED & TODO:CHANGE TO THIS
+            if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, name, classifications):
                 success_count += 1
 
         shutil.rmtree(temp_dir)
@@ -93,9 +92,9 @@ def process_image_batch(image_paths, fawkes_protector, batch_id=0):
         print(f"Error processing batch {batch_id}: {str(e)}")
         return 0
 
-def process_image(image_path, fawkes_protector):
+def process_image(image_path, fawkes_protector, classifications=[], name=""):
     """Process a single image with Fawkes"""
-    return process_image_batch([image_path], fawkes_protector, 0)
+    return process_image_batch([image_path], fawkes_protector, 0, classifications, name)
 
 def extract_frames(video_path, output_dir):
     """Extract frames from a video file"""
@@ -123,7 +122,7 @@ def extract_frames(video_path, output_dir):
     vidcap.release()
     return frame_paths, fps
 
-def create_video_from_frames(original_path, frame_dir, output_path, fps):
+def create_video_from_frames(original_path, frame_dir, output_path, fps, fawkes_protector, classifications, name):
     """Create a video from a directory of frames"""
     frame_files = sorted(glob.glob(os.path.join(frame_dir, "frame_*.png")))
     if not frame_files:
@@ -146,7 +145,7 @@ def create_video_from_frames(original_path, frame_dir, output_path, fps):
             pbar.update(1)
     
     video_writer.release()
-    return cloaking_library_instance.add_to_library(original_path, output_path, "high", 1) # TODO: change this
+    return cloaking_library_instance.add_to_library(original_path, output_path, fawkes_protector.mode, name, classifications)
 
 def process_video_frames_batch(frame_paths, fawkes_protector, cloaked_frames_dir, batch_id):
     """Process a batch of video frames"""
@@ -202,13 +201,10 @@ def process_video_frames_batch(frame_paths, fawkes_protector, cloaked_frames_dir
             shutil.copy2(frame_path, dest_path)
         return 0
 
-def process_video(video_path, dirs, fawkes_protector, batch_size=10, num_threads=1):
+def process_video(video_path, fawkes_protector, batch_size=10, num_threads=1, classifications=[], name=""):
     """Process a video by extracting frames, cloaking each frame, and recombining"""
     try:
-        # Copy original to Raw directory
         filename = os.path.basename(video_path)
-        raw_dest = os.path.join(dirs["vid_raw"], filename)
-        shutil.copy2(video_path, raw_dest)
         
         # Create temporary directories
         temp_dir = os.path.join(os.path.dirname(video_path), "temp_video")
@@ -251,9 +247,9 @@ def process_video(video_path, dirs, fawkes_protector, batch_size=10, num_threads
         # Create output video from cloaked frames
         output_filename = f"temp_{filename}"
         output_path = os.path.join(temp_dir, output_filename)
-        
-        success = create_video_from_frames(video_path, cloaked_frames_dir, output_path, fps)
-        
+
+        success = create_video_from_frames(video_path, cloaked_frames_dir, output_path, fps, fawkes_protector, classifications, name)
+
         # Clean up temp directory
         shutil.rmtree(temp_dir)
         
@@ -267,7 +263,7 @@ def process_video(video_path, dirs, fawkes_protector, batch_size=10, num_threads
         print(f"Error processing video {filename}: {str(e)}")
         return False
 
-def process_single_image(image_path, fawkes_protector):
+def process_single_image(image_path, fawkes_protector, classifications=[], name=""):
     """Process a single image file"""
     
     # Check if image needs conversion
@@ -284,9 +280,9 @@ def process_single_image(image_path, fawkes_protector):
     elif not is_image_supported(image_path):
         print(f"Unsupported image format: {image_path}")
         return False
-    
-    success = process_image(image_path, fawkes_protector)
-    
+
+    success = process_image(image_path, fawkes_protector, classifications, name)
+
     # Clean up converted file if it was created
     if converted_path and os.path.exists(converted_path):
         temp_dir = os.path.dirname(converted_path)
@@ -295,11 +291,14 @@ def process_single_image(image_path, fawkes_protector):
     return success > 0
 
 
-def process_directory(input_dir, batch_size=10, num_threads=1, mode="high"):
+def process_directory(input_dir, batch_size=10, num_threads=1, mode="high", classifications=[], name=""):
     """Process all supported files in the input directory"""
     
     print("Initializing Fawkes protector...")
     
+    
+    from fawkes.protection import Fawkes
+
     # Initialize Fawkes protector
     try:
         fawkes_protector = Fawkes(
@@ -376,7 +375,7 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high"):
     if video_files:
         for i, vid_file in enumerate(video_files):
             print(f"\nProcessing video {i+1}/{len(video_files)}: {os.path.basename(vid_file)}")
-            if process_video(vid_file, fawkes_protector, batch_size, num_threads):
+            if process_video(vid_file, fawkes_protector, batch_size, num_threads, classifications, name):
                 vid_success += 1
     else:
         print("No supported videos found to process.")
@@ -395,74 +394,213 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high"):
 ### PUBLIC FUNCTIONS ###
 # These functions can be called from other scripts or modules
 
-def cloak_folder(input_dir, age=None, expression=None, gender=None, single_person=None, obstructed=None, cloaking_mode='mid', parent_directory=False):
-    """Main function to cloak a folder of images/videos"""
-    # Determine the directory to check based on parent_directory flag
-    if parent_directory:
-        dir_to_check = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", input_dir))
-    else:
-        dir_to_check = os.path.abspath(os.path.join(os.path.dirname(__file__), input_dir))
+def perform_cloaking(input, classifications=[], name="", cloaking_mode='mid', threads=1, batch_size=10):
+    """Main function to cloak a folder of images/videos or a single file (image/video)"""
 
-    if not os.path.isdir(dir_to_check):
-        print("Could not find directory")
-        raise FileNotFoundError(f"Directory '{dir_to_check}' does not exist.")
+    dir_to_check = os.path.abspath(os.path.join(os.path.dirname(__file__), input))
+
+    # If input is a directory, process all files in the directory
+    if os.path.isdir(dir_to_check):
+        process_directory(
+            input_dir=dir_to_check,
+            batch_size=batch_size,
+            num_threads=threads,
+            mode=cloaking_mode,
+            classifications=classifications,
+            name=name
+        )
+        print("Cloaking completed.")
+        return
     
 
-    print(f"Processing directory: {dir_to_check}")
-    print(f"Age: {age}, Expression: {expression}, Gender: {gender}, Single Person: {single_person}, Obstructed: {obstructed}")
+    # If input is a file, determine if it's an image or video
+    input_file = os.path.abspath(input)
+    if not os.path.isfile(input_file):
+        raise FileNotFoundError(f"'{input_file}' does not exist.")
 
+    
+    from fawkes.protection import Fawkes
 
-    process_directory(
-        input_dir=dir_to_check,
-        batch_size=10,  # Default batch size
-        num_threads=1,  # Default to single thread for simplicity
-        mode=cloaking_mode
-    )
+    # Video file
+    if is_video_supported(input_file):
+        try:
+            fawkes_protector = Fawkes(
+                feature_extractor="arcface_extractor_0",
+                gpu="0",
+                batch_size=batch_size,
+                mode=cloaking_mode
+            )
+        except Exception as e:
+            print(f"Failed to initialize Fawkes: {str(e)}")
+            return
 
-    print("Cloaking completed.")
-    unsorted_files = cloaking_library_instance.get_unsorted_files()
+        success = process_video(input_file, fawkes_protector, batch_size, threads, classifications, name)
+        print("\n" + "="*50)
+        print("PROCESSING SUMMARY")
+        print("="*50)
+        print(f"Video: {'Successfully processed' if success else 'Failed to process'}")
+        print("="*50)
+        print("Cloaking completed.")
+        return
 
-    if len(unsorted_files) > 0:
-        print("Unsorted files:")
+    # Image file (supported or convertible)
+    elif is_image_supported(input_file) or is_image_convertible(input_file):
+        print("Initializing Fawkes protector for image processing...")
+        try:
+            fawkes_protector = Fawkes(
+                feature_extractor="arcface_extractor_0",
+                gpu="0",
+                batch_size=batch_size,
+                mode=cloaking_mode
+            )
+            print(f"Fawkes protector initialized with mode: {cloaking_mode}")
+        except Exception as e:
+            print(f"Failed to initialize Fawkes: {str(e)}")
+            return
 
-        for file in unsorted_files:
-            print(f"- {file}")
+        success = process_single_image(input_file, fawkes_protector, classifications, name)
+        print("\n" + "="*50)
+        print("PROCESSING SUMMARY")
+        print("="*50)
+        print(f"Image: {'Successfully processed' if success else 'Failed to process'}")
+        print("="*50)
+        print("Cloaking completed.")
+        return
 
-        print("For each of these files, decide on a classification, and run the following command to classify them:")
-        print("python dataset_generator.py classify <file_path> <classifications>")
-        print("Where <classifications> is one of the following:")
-        print("Age: U13, Teen, Adult, Above60")
-        print("Expression: Smiling, Neutral, Other")
-        print("Gender: M, F, Other")
-        print("Groups: Single, Multiple")
-        print("Obstruction: WithObstruction, NoObstruction")
-        print("Race: White, Brown, Black, EastAsian, Other")
-        print("Example: python dataset_generator.py classify /path/to/file.png Age:Adult Expression:Smiling")
-
-
-def classify_file(file_path, classifications):
-    cloaking_library_instance.classify_original(file_path, classifications)
+    else:
+        print(f"Error: Unsupported file format: {input_file}")
+        print(f"Supported image formats: {', '.join(cloaking_library_instance.SUPPORTED_IMAGE_FORMATS)}")
+        print(f"Convertible image formats: {', '.join(CONVERTIBLE_IMAGE_FORMATS)}")
+        print(f"Supported video formats: {', '.join(cloaking_library_instance.SUPPORTED_VIDEO_FORMATS)}")
+        return
 
 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Process images and videos with Fawkes cloaking")
-    parser.add_argument("input_path", type=str, help="Image file to process, or directory if --dir is specified")
+    parser = argparse.ArgumentParser(description="Process images and videos with Fawkes cloaking, and add them to a dataset library. Two modes: Cloak and Classify.")
+
+    # Mutually exclusive group for modes
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--cloak", action="store_true", help="Enable cloak mode. This will cloak the file/folder and add it to the library. If no name or no classifications are provided, it will be added to the Unsorted folder in the library.")
+    mode_group.add_argument("--classify", action="store_true", help="Enable classify mode. This is used to reclassify files that have already been cloaked. It will not cloak the file again, but will add the classifications to the library. Provide the file path and name/classifications as arguments. Use --list to list files in the unsorted folder requiring classifications.")
+
+    # Arguments common to both modes
+    # Custom logic to make input_path required except for --classify --list/--sync/--check
+    if (
+        ("--classify" in sys.argv and ("--list" in sys.argv or "--sync" in sys.argv or "--check" in sys.argv))
+    ):
+        # Don't require input_path for these classify subcommands
+        parser.add_argument("input_path", type=str, nargs="?", help="Image file to process, or directory if --dir is specified")
+    else:
+        parser.add_argument("input_path", type=str, help="Image file to process, or directory if --dir is specified")
     parser.add_argument("--dir", action="store_true", help="Process all files in the specified directory")
+    parser.add_argument("--name", type=str, default="", help="Name of the person (e.g., Beyonce)")
+    parser.add_argument("--age", type=str, default=None, choices=cloaking_library_instance.DATASET_REQUIREMENTS["Images"]["Age"].keys(), help="Age category")
+    parser.add_argument("--expression", type=str, default=None, choices=cloaking_library_instance.DATASET_REQUIREMENTS["Images"]["Expression"].keys(), help="Facial expression")
+    parser.add_argument("--gender", type=str, default=None, choices=cloaking_library_instance.DATASET_REQUIREMENTS["Images"]["Gender"].keys(), help="Gender")
+    parser.add_argument("--group", type=str, default=None, choices=cloaking_library_instance.DATASET_REQUIREMENTS["Images"]["Groups"].keys(), help="Specify if image has a single person or multiple people")
+    parser.add_argument("--obstruction", type=str, default=None, choices=cloaking_library_instance.DATASET_REQUIREMENTS["Images"]["Obstruction"].keys(), help="Specify if there is NoObstruction or WithObstruction")
+    parser.add_argument("--race", type=str, default=None, choices=cloaking_library_instance.DATASET_REQUIREMENTS["Images"]["Race"].keys(), help="Specify the race category")
+
+    # Cloak mode only arguments
+    parser.add_argument("--mode", type=str, default="mid", choices=["low", "mid", "high"], 
+                       help="Fawkes protection mode, specify the level of cloaking. Default is 'mid'.")    
     parser.add_argument("--batch-size", type=int, default=10, help="Number of images to process in each batch")
     parser.add_argument("--threads", type=int, default=1, help="Number of threads to use for processing")
-    parser.add_argument("--mode", type=str, default="mid", choices=["low", "mid", "high"], 
-                       help="Fawkes protection mode")
-    parser.add_argument("--name", type=str, default=None, help="Name of the person (e.g., Beyonce)")
-    parser.add_argument("--age", type=str, choices=["U13", "Teen", "Adult", "Above60"], help="Age category")
-    parser.add_argument("--expression", type=str, choices=["Smiling", "Neutral", "Other"], help="Facial expression")
-    parser.add_argument("--gender", type=str, choices=["M", "F", "Other"], help="Gender")
-    parser.add_argument("--single", type=str, choices=["Single", "Multiple"], help="Specify if image has a single person")
-    parser.add_argument("--Obstruction", type=str, choices=["NoObstruction", "WithObstruction"], help="Specify if there is NoObstruction or WithObstruction")
+
+    # Classify mode only arguments
+    parser.add_argument("--list", action="store_true", help="List files in the unsorted folder requiring classifications.")
+    parser.add_argument("--sync", action="store_true", help="Sync the library with the unsorted folder. Will also run the check command to ensure all files are correctly classified.")
+    parser.add_argument("--check", action="store_true", help="Check the library for any issues, such as missing files or incorrect classifications.")
+
+    # Validate argument combinations after parsing
+    args = parser.parse_args()
+
+    # Arguments exclusive to cloak mode
+    cloak_only_args = ["mode", "batch_size", "threads"]
+    # Arguments exclusive to classify mode
+    classify_only_args = ["list", "sync", "check"]
+
+    # Check for invalid argument combinations
+    if args.cloak:
+        for arg in classify_only_args:
+            if getattr(args, arg):
+                parser.error(f"--{arg.replace('_', '-')} can only be used with --classify mode.")
+    if args.classify:
+        for arg in cloak_only_args:
+            # batch_size and threads default to 10/1, so only error if user explicitly set them
+            if arg in ["mode", "batch_size", "threads"]:
+                if f"--{arg.replace('_', '-')}" in sys.argv:
+                    parser.error(f"--{arg.replace('_', '-')} can only be used with --cloak mode.")
+            elif getattr(args, arg) is not None:
+                parser.error(f"--{arg.replace('_', '-')} can only be used with --cloak mode.")
 
     args = parser.parse_args()
+
+    #Check if cloak mode or classify mode is enabled
+    if not args.cloak and not args.classify:
+        print("Error: You must specify either cloak or classify mode.")
+        sys.exit(1)
+    elif args.cloak and args.classify:
+        print("Error: You cannot specify both cloak and classify modes at the same time.")
+        sys.exit(1)
     
+    classifications = []
+    if args.age:
+        classifications.append(f"Age:{args.age}")
+    if args.expression:
+        classifications.append(f"Expression:{args.expression}")
+    if args.gender:
+        classifications.append(f"Gender:{args.gender}")
+    if args.group:
+        classifications.append(f"Groups:{args.group}")
+    if args.obstruction:
+        classifications.append(f"Obstruction:{args.obstruction}")
+    if args.race:
+        classifications.append(f"Race:{args.race}")
+
+    if (args.classify and not args.list and not classifications) and not args.name:
+        print("Error: You must provide at least one classification when using classify mode.")
+        sys.exit(1)
+
+    if args.list:
+        # List unsorted files requiring classifications
+        unsorted_files = cloaking_library_instance.get_unsorted_files()
+        unnamed_files = cloaking_library_instance.get_unnamed_files()
+
+        if not unsorted_files and not unnamed_files:
+            print("No unsorted files found that require classifications.")
+        else:
+            print("Unsorted files requiring classifications/naming:")
+            for file in unsorted_files:
+                if file not in unnamed_files:
+                    print(f"- {file} - Reason: No classifications provided")
+                else:
+                    print(f"- {file} - Reason: No classifications and no name provided")
+                    unnamed_files.remove(file)  # Remove from unnamed list to avoid duplicates
+            for file in unnamed_files:
+                print(f"- {file} - Reason: No name provided")
+            
+        sys.exit(0)
+
+    if args.sync:
+        # Sync the library with the unsorted folder
+        print("Syncing library...")
+        cloaking_library_instance.sync_unsorted_folder()
+        print("Sync completed.")
+        print("Running check to ensure all files are correctly classified...")
+        cloaking_library_instance.check_library()
+        print("Check completed.")
+        sys.exit(0)
+
+    if args.check:
+        # Check the library for any issues
+        print("Checking library for issues...")
+        cloaking_library_instance.check_library()
+        print("Check completed.")
+        sys.exit(0)
+
     # Get absolute paths
     input_path = os.path.abspath(args.input_path)
     
@@ -470,77 +608,81 @@ def main():
     if not os.path.exists(input_path):
         print(f"Error: Input path '{input_path}' does not exist!")
         sys.exit(1)
-        
-    print(f"Batch size: {args.batch_size}")
-    print(f"Threads: {args.threads}")
-    print(f"Protection mode: {args.mode}")
-    
-    if args.dir:
-        # Process directory
-        if not os.path.isdir(input_path):
-            print(f"Error: '{input_path}' is not a directory!")
-            sys.exit(1)
-        
-        print(f"Processing files from directory: {input_path}")
-        process_directory(input_path, args.batch_size, args.threads, args.mode)
-    else:
-        # Process single file
-        if os.path.isdir(input_path):
-            print(f"Error: '{input_path}' is a directory! Use --dir flag to process directories.")
-            sys.exit(1)
-        
-        print(f"Processing single file: {input_path}")
-        
-        # Check if it's a video or image
-        if is_video_supported(input_path):
-            print("Initializing Fawkes protector for video processing...")
-            try:
-                fawkes_protector = Fawkes(
-                    feature_extractor="arcface_extractor_0",
-                    gpu="0",
-                    batch_size=args.batch_size,
-                    mode=args.mode
-                )
-                print(f"Fawkes protector initialized with mode: {args.mode}")
-            except Exception as e:
-                print(f"Failed to initialize Fawkes: {str(e)}")
+
+    if args.classify:
+        if args.dir:
+            # Process directory for classification
+            if not os.path.isdir(input_path):
+                print(f"Error: '{input_path}' is not a directory!")
+                sys.exit(1)
+            
+            print(f"Processing directory for classification: {input_path}")
+            
+            # Get all files in the directory
+            for file in os.listdir(input_path):
+                file_path = os.path.join(input_path, file)
+                if not os.path.isfile(file_path):
+                    print(f"Skipping non-file item: {file_path}")
+                    continue
+                
+                # Check if the file is cloaked
+                cloaked_files = cloaking_library_instance.get_cloaked_files_from_filepath(file_path)
+                if not cloaked_files:
+                    print(f"No cloaked versions found for {file}. Cannot classify.")
+                    continue
+                
+                print(f"\nFound cloaked versions of {file}:")
+                for cloaked_file in cloaked_files:
+                    print(f"- {cloaked_file}")
+                
+                print()
+
+                # Classify each file
+                for file in cloaked_files:
+                    cloaking_library_instance.classify_original(file, classifications)
+                    print(f"Classifications added successfully for {file}")
+            
+        else:
+            # Process single file for classification
+            if not os.path.isfile(input_path):
+                print(f"Error: '{input_path}' is not a file!")
+                sys.exit(1)
+            
+            print(f"Processing single file for classification: {input_path}")
+            
+            # Check if the file is already cloaked
+            cloaked_files = cloaking_library_instance.get_cloaked_files_from_filepath(input_path) # TODO: allow for checking other directories, e.g. check library
+            if cloaked_files:
+                print("Found cloaked versions of the file:")
+                for cloaked_file in cloaked_files:
+                    print(f"- {cloaked_file}")
+                print("Sorting files based on classifications...")
+                cloaking_library_instance.classify_original(input_path, classifications)
+                print("Classifications added successfully.")
+            else:
+                print("File is not cloaked. Cannot classify.")
                 sys.exit(1)
 
-            success = process_video(input_path, fawkes_protector, args.batch_size, args.threads)
-            
-            print("\n" + "="*50)
-            print("PROCESSING SUMMARY")
-            print("="*50)
-            print(f"Video: {'Successfully processed' if success else 'Failed to process'}")
-            print("="*50)
-            
-        elif is_image_supported(input_path) or is_image_convertible(input_path):
-            print("Initializing Fawkes protector for image processing...")
-            try:
-                fawkes_protector = Fawkes(
-                    feature_extractor="arcface_extractor_0",
-                    gpu="0",
-                    batch_size=args.batch_size,
-                    mode=args.mode
-                )
-                print(f"Fawkes protector initialized with mode: {args.mode}")
-            except Exception as e:
-                print(f"Failed to initialize Fawkes: {str(e)}")
+    elif args.cloak:
+        # Cloak mode processing
+        if args.dir:
+            # Process directory for cloaking
+            if not os.path.isdir(input_path):
+                print(f"Error: '{input_path}' is not a directory!")
                 sys.exit(1)
             
-            success = process_single_image(input_path, fawkes_protector)
-            
-            print("\n" + "="*50)
-            print("PROCESSING SUMMARY")
-            print("="*50)
-            print(f"Image: {'Successfully processed' if success else 'Failed to process'}")
-            print("="*50)
+            print(f"Processing directory for cloaking: {input_path}")
+            perform_cloaking(input=input_path, classifications=classifications, cloaking_mode=args.mode, threads=args.threads, batch_size=args.batch_size, name=args.name)
         else:
-            print(f"Error: Unsupported file format: {input_path}")
-            print(f"Supported image formats: {', '.join(cloaking_library_instance.SUPPORTED_IMAGE_FORMATS)}")
-            print(f"Convertible image formats: {', '.join(CONVERTIBLE_IMAGE_FORMATS)}")
-            print(f"Supported video formats: {', '.join(cloaking_library_instance.SUPPORTED_VIDEO_FORMATS)}")
-            sys.exit(1)
+            # Process single file for cloaking
+            if not os.path.isfile(input_path):
+                print(f"Error: '{input_path}' is not a file!")
+                sys.exit(1)
+            
+            print(f"Processing single file for cloaking: {input_path}")
+            perform_cloaking(input=input_path, classifications=classifications, cloaking_mode=args.mode, threads=args.threads, batch_size=args.batch_size, name=args.name)
+
+    
 
 if __name__ == "__main__":
     main()
