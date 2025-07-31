@@ -4,9 +4,4 @@ tqdm==4.64.1
 
 # Fawkes dependencies
 fawkes==1.0.0
-tensorflow==2.6.5
-keras==2.6.0
-Pillow==8.4.0
-scikit-image==0.17.2
 mtcnn==0.1.1
-dlib==19.24.1
