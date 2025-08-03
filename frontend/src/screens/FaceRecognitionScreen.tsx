@@ -15,6 +15,11 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import faceRecognitionService, { FaceMatch, EnrollmentResult, RecognitionResult, EnrolledPerson } from '../services/faceRecognition';
+import {
+  useFonts,
+  Inter_400Regular,
+  Inter_600SemiBold,
+} from '@expo-google-fonts/inter';
 
 const { width } = Dimensions.get('window');
 
@@ -30,6 +35,10 @@ const FaceRecognitionScreen: React.FC = () => {
   const [enrolledPeople, setEnrolledPeople] = useState<EnrolledPerson[]>([]);
   const [showEnrolledModal, setShowEnrolledModal] = useState<boolean>(false);
 
+const [fontsLoaded] = useFonts({
+  Inter_400Regular,
+  Inter_600SemiBold,
+});
 
  useEffect(() => {
     loadEnrolledPeople();
@@ -172,8 +181,12 @@ const FaceRecognitionScreen: React.FC = () => {
   return (
     <ScrollView style={styles.container}>
       <View style={styles.content}>
-        <Text style={styles.title}>Fawkes vs Rekognition Demo</Text>
-
+        <View style={styles.logocontainer}>
+        <Image
+          source={require('./logoimg.png')}
+          style={styles.logo} 
+        />
+        </View>
         {/* Header with View Enrolled Button */}
         <View style={styles.headerRow}>
           <TouchableOpacity
@@ -386,13 +399,29 @@ export default FaceRecognitionScreen;
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: '#FFFFFF',
+    fontFamily: 'Inter_400Regular',
   },
   content: {
     padding: 16,
   },
+  logocontainer: {
+    alignItems: 'center',
+    marginTop: 40,
+    marginBottom: 10,
+    paddingHorizontal: 20,
+    width: '100%',
+  },
+  logo: {
+    resizeMode: 'contain',
+    marginTop: 150,
+    marginBottom: 150,
+    width: '80%',
+    height: undefined,
+  },
   title: {
     fontSize: 24,
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: 'bold',
     textAlign: 'center',
     marginBottom: 20,
@@ -403,16 +432,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+    fontFamily: 'Inter_400Regular',
   },
   viewEnrolledButton: {
     backgroundColor: '#6B7280',
     borderRadius: 8,
     padding: 12,
     alignItems: 'center',
+    fontFamily: 'Inter_400Regular',
   },
   viewEnrolledButtonText: {
     color: 'white',
     fontWeight: '500',
+    fontFamily: 'Inter_400Regular',
   },
   desktopLayout: {
     flexDirection: 'row',
@@ -427,7 +459,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 4,
   },
   card: {
-    backgroundColor: 'white',
+    backgroundColor: '#fffff',
     borderRadius: 8,
     padding: 16,
     shadowColor: '#000',
