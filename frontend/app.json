@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "CloakLib Frontend",
-    "slug": "cloaklib-frontend",
+    "name": "Doubleday Frontend",
+    "slug": "doubleday-frontend",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -25,6 +25,14 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-font",
+        {
+          "fonts": ["node_modules/@expo-google-fonts/inter/900Black/Inter_900Black.ttf"]
+        }
+      ]
+    ]
   }
 }

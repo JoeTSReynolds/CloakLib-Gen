@@ -1,7 +1,7 @@
 export default {
   expo: {
-    name: "Fawkes vs Rekognition Demo",
-    slug: "fawkes-rekognition-demo",
+    name: "Doubleday",
+    slug: "Doubleday",
     version: "1.0.0",
     orientation: "landscape",
     icon: "./assets/icon.png",
