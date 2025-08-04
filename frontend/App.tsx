@@ -18,14 +18,10 @@ export default function App() {
             component={FaceRecognitionScreen}
             options={{
               title: '',
-              headerTitleStyle: {
-                fontFamily: 'Inter_600SemiBold',
-                fontSize: 22,
-              },
               headerShadowVisible: false,
               headerLeft: () => (
                 <Image
-                  source={require('./assets/logo.png')} // ✅ make sure path is correct
+                  source={require('./assets/logo.png')}
                   style={{
                     width: 110,
                     height: 110,

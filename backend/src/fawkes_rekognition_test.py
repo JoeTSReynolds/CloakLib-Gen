@@ -186,8 +186,6 @@ def main():
     parser.add_argument("--add", action="store_true", help="Add faces to collection")
     args = parser.parse_args()
 
-
-
     # Configuration
     load_dotenv()  # Load environment variables from .env file
 

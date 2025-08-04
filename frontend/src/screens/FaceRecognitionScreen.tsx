@@ -19,6 +19,7 @@ import {
   useFonts,
   Inter_400Regular,
   Inter_600SemiBold,
+  Inter_500Medium,
 } from '@expo-google-fonts/inter';
 
 const { width } = Dimensions.get('window');
@@ -188,6 +189,27 @@ const [fontsLoaded] = useFonts({
         />
         </View>
         {/* Header with View Enrolled Button */}
+        <View style={styles.textcontainer}>
+          <Text style={styles.sectionHeading}>
+              What do we do?
+          </Text>
+          <Text style={styles.textbody}>
+            We build cutting-edge technology to detect image cloaking - a subtle yet powerful method used to bypass facial recognition systems and a rising threat in the world of digital identity.{"\n"} {"\n"}
+            
+            Image cloaking is a technique that subtly alters visual artefacts at the pixel level to deceive facial recognition systems, while appearing completely normal to the human eye. These tools are becoming increasingly accessible, enabling individuals and malicious actors to manipulate their digital identities or hide from automated detection. 
+            {"\n"}{"\n"}Our software exposes these hidden manipulations.{"\n"}{"\n"}
+            
+            Using advanced detection algorithms, we can analyse the underlying structure, noise patterns, and feature-space shifts in images. Our technology can distinguish between genuine visual artefacts and those that have been adversarially modified. It works seamlessly across formats, lighting conditions, and even on low-resolution or compressed images. Whether used in security, authentication, social media moderation, or forensic analysis. Our detection engine restores trust in visual data. {"\n"}{"\n"}
+          </Text>
+        </View>
+        <View style={styles.imgcontainer}>
+          <View style={styles.columnleft}>
+            <Image source={require('./person1.jpeg')} style={styles.cloakedimage} />
+          </View>
+          <View style={styles.columnright}>
+            <Image source={require('./person1_cloaked.png')} style={styles.cloakedimage} />
+          </View>
+</View>
         <View style={styles.headerRow}>
           <TouchableOpacity
             onPress={() => setShowEnrolledModal(true)}
@@ -407,7 +429,7 @@ const styles = StyleSheet.create({
   },
   logocontainer: {
     alignItems: 'center',
-    marginTop: 40,
+    marginTop: 10,
     marginBottom: 10,
     paddingHorizontal: 20,
     width: '100%',
@@ -416,7 +438,7 @@ const styles = StyleSheet.create({
     resizeMode: 'contain',
     marginTop: 150,
     marginBottom: 150,
-    width: '80%',
+    width: '60%',
     height: undefined,
   },
   title: {
@@ -476,6 +498,44 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 16,
     color: '#374151',
+    fontFamily: 'Inter_400Regular',
+  },
+  textcontainer: {
+    marginTop: 10,
+    marginBottom: 10,
+    padding: 25,
+    width: '100%',
+  },
+  sectionHeading: {
+    fontSize: 40,
+    marginBottom: 16,
+    color: '#000000',
+    fontWeight: '600',
+  },
+  textbody: {
+    fontSize: 20,
+    fontFamily: 'Inter_400Regular',
+    color: '#404040',
+    fontWeight: '400',
+  },
+  imgcontainer: {
+    flexDirection: 'row', // horizontal layout
+    justifyContent: 'space-between', // space between the 2 columns
+    padding: 10,
+  },
+  columnleft: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  columnright: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  cloakedimage: {
+    width: '90%', // relative width inside column
+    aspectRatio: 1, // keeps it square
+    resizeMode: 'cover',
+    borderRadius: 10,
   },
   selectImageButton: {
     backgroundColor: '#2563EB',
