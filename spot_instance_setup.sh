@@ -125,11 +125,6 @@ if [ -f "requirements.txt" ]; then
     $PIP_CMD install -r requirements.txt
 fi
 
-# Clone repository after conda setup
-echo "Cloning repository..."
-git clone https://github.com/JoeTSReynolds/CloakLib-Gen.git .
-git checkout colab_app
-
 # Set up AWS credentials from instance role (assumed to be configured)
 echo "Configuring AWS..."
 aws configure set region $AWS_REGION

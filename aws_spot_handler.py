@@ -12,6 +12,7 @@ from urllib.error import URLError
 from datetime import datetime, timezone
 from tqdm import tqdm
 import cv2
+from cloaklib import CloakingLibrary
 
 class SpotInterruptHandler:
     """Handles AWS spot instance interruption gracefully"""
@@ -85,20 +86,23 @@ class SpotInterruptHandler:
 class AWSS3Handler:
     """Handles AWS S3 operations for the cloaking dataset"""
     
-    def __init__(self, bucket_name, aws_region='us-east-1'):
+    def __init__(self, bucket_name, aws_region='eu-west-2'):
         self.bucket_name = bucket_name
         self.aws_region = aws_region
         self.s3_client = boto3.client('s3', region_name=aws_region)
-        
+
         # Directory structure in S3
-        self.uncloaked_prefix = "dataset/uncloaked/"
-        self.cloaked_prefix = "dataset/cloaked/"
-        self.locks_prefix = "locks/"
-        self.temp_prefix = "temp/"
+        self.uncloaked_prefix = "Dataset/Uncloaked/"
+        self.cloaked_prefix = "Dataset/Cloaked/"
+        self.locks_prefix = "Locks/"
+        self.temp_prefix = "Temp/"
         
         # Supported formats
-        self.SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png']
-        self.SUPPORTED_VIDEO_FORMATS = ['.mp4', '.avi', '.mov', '.wmv']
+        self.SUPPORTED_IMAGE_FORMATS = CloakingLibrary.SUPPORTED_IMAGE_FORMATS
+        self.SUPPORTED_VIDEO_FORMATS = CloakingLibrary.SUPPORTED_VIDEO_FORMATS
+
+        # Dataset requirements from CloakingLibrary
+        self.dataset_requirements = CloakingLibrary.DATASET_REQUIREMENTS
     
     def list_files_in_prefix(self, prefix):
         """List all files in S3 with given prefix"""
@@ -114,6 +118,68 @@ class AWSS3Handler:
         except Exception as e:
             print(f"Error listing files with prefix {prefix}: {e}")
             return []
+    
+    def create_dataset_folder_structure(self):
+        """Create the complete folder structure in S3 based on DATASET_REQUIREMENTS"""
+        print("Creating S3 folder structure based on DATASET_REQUIREMENTS...")
+        
+        folders_created = 0
+        for media_type, categories in self.dataset_requirements.items():
+            for category, subcategories in categories.items():
+                for subcategory in subcategories.keys():
+                    # Create folders for both uncloaked and cloaked
+                    uncloaked_folder = f"{self.uncloaked_prefix}{media_type}/{category}/{subcategory}/"
+                    cloaked_folder = f"{self.cloaked_prefix}{media_type}/{category}/{subcategory}/"
+                    
+                    for folder in [uncloaked_folder, cloaked_folder]:
+                        try:
+                            # Create a placeholder object to represent the folder
+                            self.s3_client.put_object(
+                                Bucket=self.bucket_name,
+                                Key=folder,
+                                Body=''
+                            )
+                            folders_created += 1
+                        except Exception as e:
+                            print(f"Error creating folder {folder}: {e}")
+        
+        print(f"Created {folders_created} folders in S3 bucket structure")
+        return folders_created > 0
+    
+    def scan_all_subfolders_for_files(self):
+        """Recursively scan all subfolders in the uncloaked directory for media files"""
+        print("Scanning all subfolders for media files...")
+        
+        all_files = []
+        
+        # Get all objects under the uncloaked prefix
+        try:
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            page_iterator = paginator.paginate(
+                Bucket=self.bucket_name,
+                Prefix=self.uncloaked_prefix
+            )
+            
+            for page in page_iterator:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        file_key = obj['Key']
+                        
+                        # Skip directories (keys ending with '/')
+                        if file_key.endswith('/'):
+                            continue
+                        
+                        # Check if file has supported extension
+                        ext = os.path.splitext(file_key)[1].lower()
+                        if ext in self.SUPPORTED_IMAGE_FORMATS + self.SUPPORTED_VIDEO_FORMATS:
+                            all_files.append(file_key)
+        
+        except Exception as e:
+            print(f"Error scanning subfolders: {e}")
+            return []
+        
+        print(f"Found {len(all_files)} media files in all subfolders")
+        return all_files
     
     def download_file(self, s3_key, local_path):
         """Download a file from S3"""
@@ -141,7 +207,10 @@ class AWSS3Handler:
             # Check if lock already exists
             self.s3_client.head_object(Bucket=self.bucket_name, Key=lock_key)
             return None  # Lock already exists
-        except self.s3_client.exceptions.NoSuchKey:
+        except self.s3_client.exceptions.ClientError as e:
+            if e.response['Error']['Code'] != '404':
+                print(f"Error checking lock {lock_key}: {e}")
+                return None
             # Lock doesn't exist, create it
             try:
                 self.s3_client.put_object(
@@ -178,20 +247,12 @@ class AWSS3Handler:
             return "unknown"
     
     def get_next_file_to_process(self):
-        """Find the next uncloaked file that needs processing"""
-        uncloaked_files = self.list_files_in_prefix(self.uncloaked_prefix)
+        """Find the next uncloaked file that needs processing from all subfolders"""
+        # Use the deep scanning method to get all files
+        uncloaked_files = self.scan_all_subfolders_for_files()
         
         for file_key in uncloaked_files:
-            # Skip directories
-            if file_key.endswith('/'):
-                continue
-            
             file_name = os.path.basename(file_key)
-            
-            # Check if file extension is supported
-            ext = os.path.splitext(file_name)[1].lower()
-            if ext not in self.SUPPORTED_IMAGE_FORMATS + self.SUPPORTED_VIDEO_FORMATS:
-                continue
             
             # Check if already processed (look for cloaked versions)
             if self._is_already_processed(file_key):
@@ -210,27 +271,33 @@ class AWSS3Handler:
         file_name = os.path.basename(uncloaked_file_key)
         base_name, ext = os.path.splitext(file_name)
         
-        # Remove any existing numbering convention if present
-        # e.g., "Bella_Ramsey_1.jpg" -> "Bella_Ramsey_1"
+        # Get the relative path from the uncloaked prefix
+        relative_path = uncloaked_file_key[len(self.uncloaked_prefix):]
+        relative_dir = os.path.dirname(relative_path)
         
         # Check for cloaked versions with different levels
         for level in ['low', 'mid', 'high']:
             cloaked_name = f"{base_name}_cloaked_{level}{ext}"
             
             # Construct the expected S3 path for cloaked file
-            # Mirror the directory structure from uncloaked to cloaked
-            relative_path = uncloaked_file_key[len(self.uncloaked_prefix):]
-            cloaked_key = f"{self.cloaked_prefix}{os.path.dirname(relative_path)}/{cloaked_name}".replace("//", "/")
+            if relative_dir:
+                cloaked_key = f"{self.cloaked_prefix}{relative_dir}/{cloaked_name}"
+            else:
+                cloaked_key = f"{self.cloaked_prefix}{cloaked_name}"
+            
+            # Normalize path separators
+            cloaked_key = cloaked_key.replace("\\", "/").replace("//", "/")
             
             try:
                 self.s3_client.head_object(Bucket=self.bucket_name, Key=cloaked_key)
                 return True  # Found at least one cloaked version
-            except self.s3_client.exceptions.NoSuchKey:
-                continue
-            except Exception as e:
-                print(f"Error checking for cloaked file {cloaked_key}: {e}")
-                continue
-        
+            except self.s3_client.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == '404':
+                    continue
+                else:
+                    print(f"Error checking for cloaked file {cloaked_key}: {e}")
+                    continue
+
         return False
     
     def save_temp_video_progress(self, original_file_key, progress_data):
@@ -261,10 +328,14 @@ class AWSS3Handler:
         try:
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=temp_key)
             return json.loads(response['Body'].read().decode('utf-8'))
-        except self.s3_client.exceptions.NoSuchKey:
-            return None
+        except self.s3_client.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                return None
+            else:
+                print(f"Error loading temp progress {temp_key}: {e}")
+                return None
         except Exception as e:
-            print(f"Error loading temp progress: {e}")
+            print(f"Error loading temp progress {temp_key}: {e}")
             return None
     
     def upload_temp_frames(self, local_frames_dir, original_file_key):
@@ -336,11 +407,76 @@ class AWSS3Handler:
         # Create cloaked filename
         cloaked_name = f"{base_name}_cloaked_{cloak_level}{ext}"
         
-        # Construct cloaked S3 path (mirror directory structure)
+        # Get the relative path from the uncloaked prefix
         relative_path = original_s3_key[len(self.uncloaked_prefix):]
-        cloaked_key = f"{self.cloaked_prefix}{os.path.dirname(relative_path)}/{cloaked_name}".replace("//", "/")
+        relative_dir = os.path.dirname(relative_path)
         
+        # Construct cloaked S3 path (mirror directory structure)
+        if relative_dir:
+            cloaked_key = f"{self.cloaked_prefix}{relative_dir}/{cloaked_name}"
+        else:
+            cloaked_key = f"{self.cloaked_prefix}{cloaked_name}"
+        
+        # Normalize path separators
+        cloaked_key = cloaked_key.replace("\\", "/").replace("//", "/")
+        
+        print(f"Uploading cloaked file: {local_file_path} -> {cloaked_key}")
         return self.upload_file(local_file_path, cloaked_key)
+    
+    def initialize_bucket_structure(self):
+        """Initialize the S3 bucket with the required folder structure"""
+        print(f"Initializing S3 bucket '{self.bucket_name}' with dataset structure...")
+        
+        # Create the main directory structure
+        main_folders = [
+            self.uncloaked_prefix,
+            self.cloaked_prefix,
+            self.locks_prefix,
+            self.temp_prefix
+        ]
+        
+        for folder in main_folders:
+            try:
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=folder,
+                    Body=''
+                )
+                print(f"Created main folder: {folder}")
+            except Exception as e:
+                print(f"Error creating main folder {folder}: {e}")
+        
+        # Create the detailed folder structure based on DATASET_REQUIREMENTS
+        return self.create_dataset_folder_structure()
+    
+    def get_processing_statistics(self):
+        """Get statistics about processed vs unprocessed files"""
+        print("Gathering processing statistics...")
+        
+        all_uncloaked_files = self.scan_all_subfolders_for_files()
+        processed_count = 0
+        unprocessed_count = 0
+        
+        for file_key in all_uncloaked_files:
+            if self._is_already_processed(file_key):
+                processed_count += 1
+            else:
+                unprocessed_count += 1
+        
+        stats = {
+            'total_files': len(all_uncloaked_files),
+            'processed': processed_count,
+            'unprocessed': unprocessed_count,
+            'completion_percentage': (processed_count / len(all_uncloaked_files) * 100) if all_uncloaked_files else 0
+        }
+        
+        print(f"Processing Statistics:")
+        print(f"  Total files: {stats['total_files']}")
+        print(f"  Processed: {stats['processed']}")
+        print(f"  Unprocessed: {stats['unprocessed']}")
+        print(f"  Completion: {stats['completion_percentage']:.2f}%")
+        
+        return stats
 
 
 def setup_aws_environment():
@@ -382,3 +518,30 @@ def get_aws_config_from_args(args):
         'bucket_name': bucket_name,
         'aws_region': aws_region
     }
+
+
+def initialize_aws_dataset_structure(bucket_name, aws_region='eu-west-2'):
+    """Initialize AWS S3 bucket with the complete dataset structure"""
+    print(f"Setting up AWS S3 dataset structure in bucket: {bucket_name}")
+    
+    if not setup_aws_environment():
+        return False
+    
+    try:
+        s3_handler = AWSS3Handler(bucket_name, aws_region)
+        
+        # Initialize the bucket structure
+        success = s3_handler.initialize_bucket_structure()
+        
+        if success:
+            print("AWS S3 dataset structure initialized successfully!")
+            # Get initial statistics
+            s3_handler.get_processing_statistics()
+        else:
+            print("Failed to initialize AWS S3 dataset structure")
+        
+        return success
+        
+    except Exception as e:
+        print(f"Error initializing AWS dataset structure: {e}")
+        return False

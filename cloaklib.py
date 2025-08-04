@@ -39,12 +39,13 @@ class CloakingLibrary:
                 "NoObstruction": 400,
                 "WithObstruction": 100
             },
-            "Race": {
+            "Race": { #Update these numbers
                 "White": 100,
-                "Brown": 145,
-                "East Asian": 115,
-                "Black": 75,
-                "Other": 15
+                "South Asian": 100,
+                "Arab": 100,
+                "East Asian": 100,
+                "Black": 100,
+                "Other": 100
             }
         },
 

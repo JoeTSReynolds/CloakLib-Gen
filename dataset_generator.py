@@ -301,7 +301,6 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high", clas
     
     print("Initializing Fawkes protector...")
     
-    
     from fawkes.protection import Fawkes
 
     # Initialize Fawkes protector
@@ -412,7 +411,7 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
     # Set up cleanup callback for graceful shutdown
     def cleanup_callback():
         print("Performing cleanup before shutdown...")
-        # Any additional cleanup can be added here
+        # Any extra cleanup logic can go here
         pass
     
     # Initialize spot interrupt handler
