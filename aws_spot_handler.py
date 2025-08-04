@@ -51,23 +51,47 @@ class SpotInterruptHandler:
         """Monitor AWS metadata for spot interruption notice"""
         metadata_url = "http://169.254.169.254/latest/meta-data/spot/instance-action"
         
+        # Get IMDSv2 token first
+        token_url = "http://169.254.169.254/latest/api/token"
+        
         while not self.stop_monitoring.is_set():
             try:
-                response = urlopen(metadata_url, timeout=2)
-                if response.getcode() == 200:
-                    print("\n*** SPOT INSTANCE INTERRUPTION DETECTED ***")
-                    print("Initiating graceful shutdown...")
-                    self._handle_interrupt(signal.SIGTERM, None)
-                    break
-            except URLError:
-                # No interruption notice - this is expected most of the time
-                pass
+                # Get token for IMDSv2
+                token_request = urllib.request.Request(
+                    token_url,
+                    headers={'X-aws-ec2-metadata-token-ttl-seconds': '21600'},
+                    method='PUT'
+                )
+                with urlopen(token_request, timeout=2) as token_response:
+                    token = token_response.read().decode('utf-8')
+                
+                # Check for interruption with token
+                interruption_request = urllib.request.Request(
+                    metadata_url,
+                    headers={'X-aws-ec2-metadata-token': token}
+                )
+                
+                with urlopen(interruption_request, timeout=2) as response:
+                    if response.getcode() == 200:
+                        interruption_data = response.read().decode('utf-8')
+                        print(f"\n*** SPOT INSTANCE INTERRUPTION DETECTED ***")
+                        print(f"Interruption details: {interruption_data}")
+                        print("Initiating graceful shutdown...")
+                        self._handle_interrupt(signal.SIGTERM, None)
+                        break
+                        
+            except URLError as e:
+                if hasattr(e, 'code') and e.code == 404:
+                    # No interruption notice - this is normal
+                    pass
+                else:
+                    print(f"Error checking spot interruption: {e}")
             except Exception as e:
                 print(f"Error checking spot interruption: {e}")
             
             # Check every 30 seconds
             self.stop_monitoring.wait(30)
-    
+        
     def set_current_lock(self, lock_key):
         """Set the current file lock being processed"""
         self.current_lock_key = lock_key
