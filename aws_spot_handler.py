@@ -7,6 +7,8 @@ import sys
 import threading
 import glob
 import shutil
+from urllib.request import urlopen
+from urllib.error import URLError
 import urllib
 from datetime import datetime, timezone
 from tqdm import tqdm
@@ -61,7 +63,7 @@ class SpotInterruptHandler:
                     headers={'X-aws-ec2-metadata-token-ttl-seconds': '21600'},
                     method='PUT'
                 )
-                with urllib.urlopen(token_request, timeout=2) as token_response:
+                with urlopen(token_request, timeout=2) as token_response:
                     token = token_response.read().decode('utf-8')
                 
                 # Check for interruption with token
@@ -70,7 +72,7 @@ class SpotInterruptHandler:
                     headers={'X-aws-ec2-metadata-token': token}
                 )
                 
-                with urllib.urlopen(interruption_request, timeout=2) as response:
+                with urlopen(interruption_request, timeout=2) as response:
                     if response.getcode() == 200:
                         interruption_data = response.read().decode('utf-8')
                         print(f"\n*** SPOT INSTANCE INTERRUPTION DETECTED ***")
@@ -79,7 +81,7 @@ class SpotInterruptHandler:
                         self._handle_interrupt(signal.SIGTERM, None)
                         break
                         
-            except urllib.URLError as e:
+            except URLError as e:
                 if hasattr(e, 'code') and e.code == 404:
                     # No interruption notice - this is normal
                     pass
@@ -264,7 +266,7 @@ class AWSS3Handler:
     def _get_instance_id(self):
         """Get the current EC2 instance ID"""
         try:
-            response = urllib.urlopen("http://169.254.169.254/latest/meta-data/instance-id", timeout=2)
+            response = urlopen("http://169.254.169.254/latest/meta-data/instance-id", timeout=2)
             return response.read().decode('utf-8')
         except:
             return "unknown"
