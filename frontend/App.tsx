@@ -25,7 +25,11 @@ export default function App() {
               headerShadowVisible: false,
               headerLeft: () => (
                 <Image
+<<<<<<< HEAD
                   source={require('./assets/logo.png')}
+=======
+                  source={require('./assets/logo.png')} // ✅ make sure path is correct
+>>>>>>> 3e13ed7 (logo updated and navbar)
                   style={{
                     width: 110,
                     height: 110,
