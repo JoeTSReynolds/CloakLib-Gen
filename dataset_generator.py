@@ -4,8 +4,13 @@ import argparse
 import glob
 import shutil
 import cv2
+import time
+from datetime import datetime, timezone
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Import AWS spot handling modules
+from aws_spot_handler import AWSS3Handler, SpotInterruptHandler, setup_aws_environment, get_aws_config_from_args
 
 from cloaklib import CloakingLibrary
 
@@ -391,6 +396,342 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high", clas
     print(f"Skipped: {len(all_files) - len(image_files) - len(convertible_files) - len(video_files)} unsupported files")
     print("="*50)
 
+### AWS SPOT INSTANCE FUNCTIONS ###
+
+def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='mid', batch_size=10):
+    """Main function for AWS spot instance processing"""
+    
+    # Set up AWS environment
+    print("Setting up AWS environment...")
+    if not setup_aws_environment():
+        return False
+    
+    # Initialize S3 handler
+    s3_handler = AWSS3Handler(bucket_name, aws_region)
+    
+    # Set up cleanup callback for graceful shutdown
+    def cleanup_callback():
+        print("Performing cleanup before shutdown...")
+        # Any additional cleanup can be added here
+        pass
+    
+    # Initialize spot interrupt handler
+    interrupt_handler = SpotInterruptHandler(s3_handler.s3_client, bucket_name, cleanup_callback)
+    interrupt_handler.start_monitoring()
+    
+    # Initialize Fawkes protector
+    from fawkes.protection import Fawkes
+    try:
+        fawkes_protector = Fawkes(
+            feature_extractor="arcface_extractor_0",
+            gpu="0",
+            batch_size=batch_size,
+            mode=cloak_level
+        )
+        print(f"Fawkes protector initialized with mode: {cloak_level}")
+    except Exception as e:
+        print(f"Failed to initialize Fawkes: {str(e)}")
+        return False
+    
+    # Main processing loop
+    processed_count = 0
+    while not interrupt_handler.interrupted:
+        # Get next file to process
+        file_key, lock_key = s3_handler.get_next_file_to_process()
+        
+        if not file_key:
+            print("No more files to process. Waiting...")
+            time.sleep(30)
+            continue
+        
+        print(f"\nProcessing: {file_key}")
+        interrupt_handler.set_current_lock(lock_key)
+        
+        try:
+            # Process the file
+            success = process_aws_file(file_key, s3_handler, fawkes_protector, cloak_level, batch_size, interrupt_handler)
+            
+            if success:
+                processed_count += 1
+                print(f"Successfully processed {os.path.basename(file_key)} (Total: {processed_count})")
+            else:
+                print(f"Failed to process {os.path.basename(file_key)}")
+        
+        except Exception as e:
+            print(f"Error processing {file_key}: {e}")
+        
+        finally:
+            # Always release the lock
+            if lock_key:
+                s3_handler.release_lock(lock_key)
+                interrupt_handler.set_current_lock(None)
+    
+    print(f"Spot instance processing completed. Total files processed: {processed_count}")
+    return True
+
+
+def process_aws_file(file_key, s3_handler, fawkes_protector, cloak_level, batch_size, interrupt_handler):
+    """Process a single file from AWS S3"""
+    
+    # Create local working directory
+    work_dir = "/tmp/cloaking_work"
+    os.makedirs(work_dir, exist_ok=True)
+    
+    # Download the file
+    file_name = os.path.basename(file_key)
+    local_file_path = os.path.join(work_dir, file_name)
+    
+    if not s3_handler.download_file(file_key, local_file_path):
+        return False
+    
+    # Determine file type
+    ext = os.path.splitext(file_name)[1].lower()
+    
+    try:
+        if ext in s3_handler.SUPPORTED_IMAGE_FORMATS:
+            # Process image
+            success = process_aws_image(local_file_path, file_key, s3_handler, fawkes_protector, cloak_level)
+        
+        elif ext in s3_handler.SUPPORTED_VIDEO_FORMATS:
+            # Process video (with interruption handling)
+            success = process_aws_video(local_file_path, file_key, s3_handler, fawkes_protector, cloak_level, batch_size, interrupt_handler)
+        
+        else:
+            print(f"Unsupported file format: {ext}")
+            success = False
+    
+    finally:
+        # Clean up local files
+        if os.path.exists(local_file_path):
+            os.remove(local_file_path)
+        
+        # Clean up work directory if empty
+        try:
+            if not os.listdir(work_dir):
+                os.rmdir(work_dir)
+        except:
+            pass
+    
+    return success
+
+
+def process_aws_image(local_file_path, original_s3_key, s3_handler, fawkes_protector, cloak_level):
+    """Process a single image for AWS spot instance"""
+    
+    try:
+        # Create temporary directory for processing
+        temp_dir = os.path.join(os.path.dirname(local_file_path), "temp_image")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Copy image to temp directory
+        filename = os.path.basename(local_file_path)
+        temp_image_path = os.path.join(temp_dir, filename)
+        shutil.copy2(local_file_path, temp_image_path)
+        
+        # Process with Fawkes
+        result = fawkes_protector.run_protection(
+            [temp_image_path],
+            batch_size=1,
+            format='png' if local_file_path.endswith('.png') else 'jpg',
+            separate_target=True,
+            debug=False,
+            no_align=False
+        )
+        
+        # Find the cloaked output
+        base_name = os.path.splitext(filename)[0]
+        ext = os.path.splitext(filename)[1]
+        cloaked_filename = f"{base_name}_cloaked{ext}"
+        cloaked_path = os.path.join(temp_dir, cloaked_filename)
+        
+        if os.path.exists(cloaked_path):
+            # Upload cloaked file to S3
+            success = s3_handler.upload_processed_file(cloaked_path, original_s3_key, cloak_level)
+        else:
+            print(f"Cloaked file not found: {cloaked_path}")
+            success = False
+        
+        # Clean up temp directory
+        shutil.rmtree(temp_dir)
+        return success
+        
+    except Exception as e:
+        print(f"Error processing image {local_file_path}: {e}")
+        return False
+
+
+def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_protector, cloak_level, batch_size, interrupt_handler):
+    """Process a video for AWS spot instance with interruption handling"""
+    
+    try:
+        filename = os.path.basename(local_file_path)
+        base_name = os.path.splitext(filename)[0]
+        
+        # Create working directories
+        work_dir = os.path.dirname(local_file_path)
+        frames_dir = os.path.join(work_dir, f"{base_name}_frames")
+        cloaked_frames_dir = os.path.join(work_dir, f"{base_name}_cloaked_frames")
+        
+        os.makedirs(frames_dir, exist_ok=True)
+        os.makedirs(cloaked_frames_dir, exist_ok=True)
+        
+        # Check for existing progress
+        progress_data = s3_handler.load_temp_video_progress(original_s3_key)
+        
+        if progress_data:
+            print(f"Resuming video processing from frame {progress_data.get('last_processed_frame', 0)}")
+            
+            # Download existing temp frames
+            downloaded_frames = s3_handler.download_temp_frames(original_s3_key, cloaked_frames_dir)
+            fps = progress_data['fps']
+            total_frames = progress_data['total_frames']
+            last_processed = progress_data.get('last_processed_frame', 0)
+            
+            # Extract remaining frames
+            remaining_frames = extract_video_frames_from_position(local_file_path, frames_dir, last_processed)
+            
+        else:
+            # Start fresh - extract all frames
+            print(f"Starting fresh video processing: {filename}")
+            frame_paths, fps = extract_frames(local_file_path, frames_dir)
+            total_frames = len(frame_paths)
+            last_processed = 0
+            
+            # Save initial progress
+            progress_data = {
+                'fps': fps,
+                'total_frames': total_frames,
+                'last_processed_frame': 0,
+                'cloak_level': cloak_level,
+                'started_at': datetime.now(timezone.utc).isoformat()
+            }
+            s3_handler.save_temp_video_progress(original_s3_key, progress_data)
+        
+        # Process remaining frames in batches
+        remaining_frame_pattern = os.path.join(frames_dir, "frame_*.png")
+        all_frames = sorted(glob.glob(remaining_frame_pattern))
+        remaining_frames = [f for f in all_frames if int(os.path.basename(f).split('_')[1].split('.')[0]) >= last_processed]
+        
+        if not remaining_frames:
+            remaining_frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
+        
+        # Process frames in batches
+        frame_batches = [remaining_frames[i:i + batch_size] for i in range(0, len(remaining_frames), batch_size)]
+        
+        for batch_id, batch in enumerate(frame_batches):
+            if interrupt_handler.interrupted:
+                print("Interruption detected during video processing. Saving progress...")
+                break
+            
+            print(f"Processing frame batch {batch_id + 1}/{len(frame_batches)}")
+            
+            # Process this batch
+            process_video_frames_batch(batch, fawkes_protector, cloaked_frames_dir, batch_id)
+            
+            # Update progress
+            frames_processed = min((batch_id + 1) * batch_size, len(remaining_frames))
+            progress_data['last_processed_frame'] = last_processed + frames_processed
+            s3_handler.save_temp_video_progress(original_s3_key, progress_data)
+            
+            # Upload temp frames periodically (every 5 batches)
+            if (batch_id + 1) % 5 == 0:
+                s3_handler.upload_temp_frames(cloaked_frames_dir, original_s3_key)
+        
+        # If processing completed without interruption
+        if not interrupt_handler.interrupted:
+            # Upload all temp frames
+            s3_handler.upload_temp_frames(cloaked_frames_dir, original_s3_key)
+            
+            # Create final video
+            output_filename = f"{base_name}_cloaked_{cloak_level}.mp4"
+            output_path = os.path.join(work_dir, output_filename)
+            
+            success = create_video_from_frames_aws(cloaked_frames_dir, output_path, fps)
+            
+            if success:
+                # Upload final video to S3
+                success = s3_handler.upload_processed_file(output_path, original_s3_key, cloak_level)
+                
+                if success:
+                    # Clean up temp files in S3
+                    s3_handler.cleanup_temp_files(original_s3_key)
+                    
+                    # Clean up local files
+                    os.remove(output_path)
+            
+            # Clean up local directories
+            shutil.rmtree(frames_dir, ignore_errors=True)
+            shutil.rmtree(cloaked_frames_dir, ignore_errors=True)
+            
+            return success
+        
+        else:
+            # Interrupted - upload current progress
+            print("Uploading partial progress before shutdown...")
+            s3_handler.upload_temp_frames(cloaked_frames_dir, original_s3_key)
+            
+            # Clean up local directories
+            shutil.rmtree(frames_dir, ignore_errors=True)
+            shutil.rmtree(cloaked_frames_dir, ignore_errors=True)
+            
+            return False  # Will be resumed later
+    
+    except Exception as e:
+        print(f"Error processing video {local_file_path}: {e}")
+        return False
+
+
+def extract_video_frames_from_position(video_path, output_dir, start_frame):
+    """Extract video frames starting from a specific frame number"""
+    vidcap = cv2.VideoCapture(video_path)
+    
+    # Set the starting position
+    vidcap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    
+    success, image = vidcap.read()
+    count = start_frame
+    frame_paths = []
+    
+    while success:
+        frame_path = os.path.join(output_dir, f"frame_{count:05d}.png")
+        cv2.imwrite(frame_path, image)
+        frame_paths.append(frame_path)
+        success, image = vidcap.read()
+        count += 1
+    
+    vidcap.release()
+    return frame_paths
+
+
+def create_video_from_frames_aws(frames_dir, output_path, fps):
+    """Create a video from frames directory for AWS processing"""
+    frame_files = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
+    if not frame_files:
+        print("No frames found to create video")
+        return False
+    
+    # Read the first frame to get dimensions
+    frame = cv2.imread(frame_files[0])
+    if frame is None:
+        print("Could not read first frame")
+        return False
+    
+    height, width, _ = frame.shape
+    
+    # Create video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    # Add each frame to the video
+    for frame_file in tqdm(frame_files, desc="Creating video"):
+        frame = cv2.imread(frame_file)
+        if frame is not None:
+            video_writer.write(frame)
+    
+    video_writer.release()
+    return True
+
+
 ### PUBLIC FUNCTIONS ###
 # These functions can be called from other scripts or modules
 
@@ -484,14 +825,16 @@ def main():
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument("--cloak", action="store_true", help="Enable cloak mode. This will cloak the file/folder and add it to the library. If no name or no classifications are provided, it will be added to the Unsorted folder in the library.")
     mode_group.add_argument("--classify", action="store_true", help="Enable classify mode. This is used to reclassify files that have already been cloaked. It will not cloak the file again, but will add the classifications to the library. Provide the file path and name/classifications as arguments. Use --list to list files in the unsorted folder requiring classifications.")
+    mode_group.add_argument("--aws-spot", action="store_true", help="Enable AWS spot instance mode for automatic S3 processing")
 
-    # Arguments common to both modes
-    # Custom logic to make input_path required except for --classify --list/--sync/--check
+    # Arguments common to both modes (but not AWS spot mode)
+    # Custom logic to make input_path required except for --classify --list/--sync/--check or --aws-spot
     if (
-        ("--classify" in sys.argv and ("--list" in sys.argv or "--sync" in sys.argv or "--check" in sys.argv))
+        ("--classify" in sys.argv and ("--list" in sys.argv or "--sync" in sys.argv or "--check" in sys.argv)) or
+        "--aws-spot" in sys.argv
     ):
-        # Don't require input_path for these classify subcommands
-        parser.add_argument("input_path", type=str, nargs="?", help="Image file to process, or directory if --dir is specified")
+        # Don't require input_path for these subcommands
+        parser.add_argument("input_path", type=str, nargs="?", help="Image file to process, or directory if --dir is specified (not needed for --aws-spot)")
     else:
         parser.add_argument("input_path", type=str, help="Image file to process, or directory if --dir is specified")
     parser.add_argument("--dir", action="store_true", help="Process all files in the specified directory")
@@ -509,6 +852,10 @@ def main():
     parser.add_argument("--batch-size", type=int, default=10, help="Number of images to process in each batch")
     parser.add_argument("--threads", type=int, default=1, help="Number of threads to use for processing")
 
+    # AWS Spot Instance arguments
+    parser.add_argument("--aws-bucket", type=str, help="S3 bucket name for AWS spot instance mode (required with --aws-spot)")
+    parser.add_argument("--aws-region", type=str, default="us-east-1", help="AWS region (default: us-east-1)")
+
     # Classify mode only arguments
     parser.add_argument("--list", action="store_true", help="List files in the unsorted folder requiring classifications.")
     parser.add_argument("--sync", action="store_true", help="Sync the library with the unsorted folder. Will also run the check command to ensure all files are correctly classified.")
@@ -521,13 +868,15 @@ def main():
     cloak_only_args = ["mode", "batch_size", "threads"]
     # Arguments exclusive to classify mode
     classify_only_args = ["list", "sync", "check"]
+    # Arguments exclusive to aws-spot mode
+    aws_spot_only_args = ["aws_bucket", "aws_region"]
 
     # Check for invalid argument combinations
     if args.cloak:
         for arg in classify_only_args:
             if getattr(args, arg):
                 parser.error(f"--{arg.replace('_', '-')} can only be used with --classify mode.")
-    if args.classify:
+    elif args.classify:
         for arg in cloak_only_args:
             # batch_size and threads default to 10/1, so only error if user explicitly set them
             if arg in ["mode", "batch_size", "threads"]:
@@ -535,15 +884,41 @@ def main():
                     parser.error(f"--{arg.replace('_', '-')} can only be used with --cloak mode.")
             elif getattr(args, arg) is not None:
                 parser.error(f"--{arg.replace('_', '-')} can only be used with --cloak mode.")
+    elif args.aws_spot:
+        # AWS spot mode can use some cloak arguments (mode, batch_size)
+        for arg in classify_only_args:
+            if getattr(args, arg):
+                parser.error(f"--{arg.replace('_', '-')} can only be used with --classify mode.")
 
     args = parser.parse_args()
 
+    # AWS Spot Instance Mode
+    if args.aws_spot:
+        if not args.aws_bucket:
+            print("Error: --aws-bucket is required when using --aws-spot mode.")
+            sys.exit(1)
+        
+        print("Starting AWS Spot Instance processing mode...")
+        success = process_aws_spot_instance(
+            bucket_name=args.aws_bucket,
+            aws_region=args.aws_region,
+            cloak_level=args.mode,
+            batch_size=args.batch_size
+        )
+        
+        if success:
+            print("AWS Spot Instance processing completed successfully.")
+        else:
+            print("AWS Spot Instance processing failed.")
+            sys.exit(1)
+        return
+
     #Check if cloak mode or classify mode is enabled
     if not args.cloak and not args.classify:
-        print("Error: You must specify either cloak or classify mode.")
+        print("Error: You must specify either cloak, classify, or aws-spot mode.")
         sys.exit(1)
-    elif args.cloak and args.classify:
-        print("Error: You cannot specify both cloak and classify modes at the same time.")
+    elif (args.cloak and args.classify):
+        print("Error: You cannot specify multiple modes at the same time.")
         sys.exit(1)
     
     classifications = []
