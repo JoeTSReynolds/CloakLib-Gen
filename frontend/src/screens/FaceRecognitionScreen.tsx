@@ -19,7 +19,6 @@ import {
   useFonts,
   Inter_400Regular,
   Inter_600SemiBold,
-  Inter_500Medium,
 } from '@expo-google-fonts/inter';
 
 const { width } = Dimensions.get('window');
