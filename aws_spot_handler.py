@@ -61,7 +61,7 @@ class SpotInterruptHandler:
                 token_request = urllib.request.Request(
                     token_url,
                     headers={'X-aws-ec2-metadata-token-ttl-seconds': '21600'},
-                    method='PUT'
+                    data=b''
                 )
                 with urlopen(token_request, timeout=2) as token_response:
                     token = token_response.read().decode('utf-8')
@@ -278,11 +278,15 @@ class AWSS3Handler:
         
         for file_key in uncloaked_files:
             file_name = os.path.basename(file_key)
-            
+
             # Check if already processed (look for cloaked versions)
             if self._is_already_processed(file_key):
                 continue
-            
+
+            if self._is_file_failed(file_key):
+                print(f"Skipping failed file: {file_key}")
+                continue
+
             # Try to create a lock for this file
             lock_key = self.create_lock(file_name)
             if lock_key:
@@ -295,6 +299,12 @@ class AWSS3Handler:
         # Extract the base name and construct expected cloaked file paths
         file_name = os.path.basename(uncloaked_file_key)
         base_name, ext = os.path.splitext(file_name)
+
+        if ext.lower() in self.SUPPORTED_IMAGE_FORMATS:
+            ext = '.png'  # Normalize to PNG for cloaked images
+
+        elif ext.lower() in self.SUPPORTED_VIDEO_FORMATS:
+            ext = '.mp4'
         
         # Get the relative path from the uncloaked prefix
         relative_path = uncloaked_file_key[len(self.uncloaked_prefix):]
@@ -324,6 +334,74 @@ class AWSS3Handler:
                     continue
 
         return False
+    
+    def get_next_file_to_process_all_levels(self):
+        """Find the next uncloaked file that needs processing in any missing protection level"""
+        # Use the deep scanning method to get all files
+        uncloaked_files = self.scan_all_subfolders_for_files()
+        
+        for file_key in uncloaked_files:
+            file_name = os.path.basename(file_key)
+
+            # Check which levels are missing
+            missing_levels = self._get_missing_cloak_levels(file_key)
+            
+            if not missing_levels:
+                continue  # All levels already processed
+
+            if self._is_file_failed(file_key):
+                print(f"Skipping failed file: {file_key}")
+                continue
+
+            # Try to create a lock for this file
+            lock_key = self.create_lock(file_name)
+            if lock_key:
+                return file_key, lock_key, missing_levels
+        
+        return None, None, []
+    
+    def _get_missing_cloak_levels(self, uncloaked_file_key):
+        """Check which cloak levels are missing for a file"""
+        file_name = os.path.basename(uncloaked_file_key)
+        base_name, ext = os.path.splitext(file_name)
+
+        if ext.lower() in self.SUPPORTED_IMAGE_FORMATS:
+            ext = '.png'  # Normalize to PNG for cloaked images
+        elif ext.lower() in self.SUPPORTED_VIDEO_FORMATS:
+            ext = '.mp4'
+        
+        # Get the relative path from the uncloaked prefix
+        relative_path = uncloaked_file_key[len(self.uncloaked_prefix):]
+        relative_dir = os.path.dirname(relative_path)
+        
+        missing_levels = []
+        
+        # Check for each cloak level
+        for level in ['low', 'mid', 'high']:
+            cloaked_name = f"{base_name}_cloaked_{level}{ext}"
+            
+            # Construct the expected S3 path for cloaked file
+            if relative_dir:
+                cloaked_key = f"{self.cloaked_prefix}{relative_dir}/{cloaked_name}"
+            else:
+                cloaked_key = f"{self.cloaked_prefix}{cloaked_name}"
+            
+            # Normalize path separators
+            cloaked_key = cloaked_key.replace("\\", "/").replace("//", "/")
+            
+            try:
+                self.s3_client.head_object(Bucket=self.bucket_name, Key=cloaked_key)
+                # File exists, this level is already processed
+                continue
+            except self.s3_client.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == '404':
+                    # File doesn't exist, this level is missing
+                    missing_levels.append(level)
+                else:
+                    print(f"Error checking for cloaked file {cloaked_key}: {e}")
+                    continue
+        
+        return missing_levels
     
     def save_temp_video_progress(self, original_file_key, progress_data):
         """Save temporary video processing progress to S3"""
@@ -428,6 +506,12 @@ class AWSS3Handler:
         # Extract file info
         file_name = os.path.basename(original_s3_key)
         base_name, ext = os.path.splitext(file_name)
+
+        if ext.lower() in self.SUPPORTED_IMAGE_FORMATS:
+            ext = '.png'  # Normalize to PNG for cloaked images
+
+        elif ext.lower() in self.SUPPORTED_VIDEO_FORMATS:
+            ext = '.mp4'
         
         # Create cloaked filename
         cloaked_name = f"{base_name}_cloaked_{cloak_level}{ext}"
@@ -502,6 +586,47 @@ class AWSS3Handler:
         print(f"  Completion: {stats['completion_percentage']:.2f}%")
         
         return stats
+    
+    def mark_file_as_failed(self, file_key, error_message="Processing failed"):
+        """Mark a file as failed to prevent reprocessing"""
+        file_name = os.path.basename(file_key)
+        base_name = os.path.splitext(file_name)[0]
+        
+        failed_key = f"Failed/{base_name}_failed.json"
+        
+        try:
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=failed_key,
+                Body=json.dumps({
+                    "original_file": file_key,
+                    "error": error_message,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "instance_id": self._get_instance_id()
+                })
+            )
+            print(f"Marked file as failed: {file_key}")
+            return True
+        except Exception as e:
+            print(f"Error marking file as failed {file_key}: {e}")
+            return False
+
+    def _is_file_failed(self, file_key):
+        """Check if a file has been marked as failed"""
+        file_name = os.path.basename(file_key)
+        base_name = os.path.splitext(file_name)[0]
+        
+        failed_key = f"Failed/{base_name}_failed.json"
+        
+        try:
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=failed_key)
+            return True
+        except self.s3_client.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                return False
+            else:
+                print(f"Error checking failed status {failed_key}: {e}")
+                return False
 
 
 def setup_aws_environment():

@@ -87,7 +87,7 @@ def process_image_batch(image_paths, fawkes_protector, batch_id=0, classificatio
         # Copy results to appropriate directories
         for i, image_path in enumerate(image_paths):
             print("Adding to library:", image_path)
-            if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, name, classifications):
+            if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, name, classifications): #TODO: Is this correct imagepath?
                 success_count += 1
 
         shutil.rmtree(temp_dir)
@@ -182,7 +182,7 @@ def process_video_frames_batch(frame_paths, fawkes_protector, cloaked_frames_dir
             frame_filename = os.path.basename(frame_path)
             base_name = os.path.splitext(frame_filename)[0]
             
-            cloaked_filename = f"{base_name}_cloaked.png"
+            cloaked_filename = f"{base_name}_cloaked.png" #TODO: Should this be png?
             cloaked_path = os.path.join(temp_dir, cloaked_filename)
             
             dest_path = os.path.join(cloaked_frames_dir, frame_filename)
@@ -397,7 +397,7 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high", clas
 
 ### AWS SPOT INSTANCE FUNCTIONS ###
 
-def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='mid', batch_size=10):
+def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='mid', batch_size=10, all_levels=False):
     """Main function for AWS spot instance processing"""
     
     # Set up AWS environment
@@ -427,7 +427,6 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
             batch_size=batch_size,
             mode=cloak_level
         )
-        print(f"Fawkes protector initialized with mode: {cloak_level}")
     except Exception as e:
         print(f"Failed to initialize Fawkes: {str(e)}")
         return False
@@ -436,17 +435,27 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
     processed_count = 0
     while not interrupt_handler.interrupted:
         # Get next file to process
-        file_key, lock_key = s3_handler.get_next_file_to_process()
+        if all_levels:
+            file_key, lock_key, missing_levels = s3_handler.get_next_file_to_process_all_levels()
+            if not file_key:
+                print("No more files to process. Waiting...")
+                time.sleep(30)
+                continue
+        else:
+            file_key, lock_key = s3_handler.get_next_file_to_process()
+            missing_levels = [cloak_level]
+            if not file_key:
+                print("No more files to process. Waiting...")
+                time.sleep(30)
+                continue
         
-        if not file_key:
-            print("No more files to process. Waiting...")
-            time.sleep(30)
-            continue
-        
-        print(f"\nProcessing: {file_key}")
+        print(f"\nProcessing: {file_key} with levels: {missing_levels}")
         interrupt_handler.set_current_lock(lock_key)
         
         try:
+            cloak_level = missing_levels[0] if missing_levels else cloak_level
+            fawkes_protector.mode = cloak_level
+
             # Process the file
             success = process_aws_file(file_key, s3_handler, fawkes_protector, cloak_level, batch_size, interrupt_handler)
             
@@ -503,20 +512,22 @@ def process_aws_file(file_key, s3_handler, fawkes_protector, cloak_level, batch_
         # Clean up local files
         if os.path.exists(local_file_path):
             os.remove(local_file_path)
-        
-        # Clean up work directory if empty
-        try:
-            if not os.listdir(work_dir):
-                os.rmdir(work_dir)
-        except:
-            pass
-    
+
+        if os.path.exists(work_dir):
+            # Clean up working directory
+            shutil.rmtree(work_dir)
+
+    # If failed to process, mark as failed in S3
+    if not success:
+        s3_handler.mark_file_as_failed(file_key, f"Failed to process file, marking as failed in S3: {file_name}")
+        return False
+
     return success
 
 
 def process_aws_image(local_file_path, original_s3_key, s3_handler, fawkes_protector, cloak_level):
     """Process a single image for AWS spot instance"""
-    
+    temp_dir = None
     try:
         # Create temporary directory for processing
         temp_dir = os.path.join(os.path.dirname(local_file_path), "temp_image")
@@ -531,7 +542,7 @@ def process_aws_image(local_file_path, original_s3_key, s3_handler, fawkes_prote
         result = fawkes_protector.run_protection(
             [temp_image_path],
             batch_size=1,
-            format='png' if local_file_path.endswith('.png') else 'jpg',
+            format='png',
             separate_target=True,
             debug=False,
             no_align=False
@@ -540,7 +551,7 @@ def process_aws_image(local_file_path, original_s3_key, s3_handler, fawkes_prote
         # Find the cloaked output
         base_name = os.path.splitext(filename)[0]
         ext = os.path.splitext(filename)[1]
-        cloaked_filename = f"{base_name}_cloaked{ext}"
+        cloaked_filename = f"{base_name}_cloaked.png" #TODO: Should this be png?
         cloaked_path = os.path.join(temp_dir, cloaked_filename)
         
         if os.path.exists(cloaked_path):
@@ -550,18 +561,24 @@ def process_aws_image(local_file_path, original_s3_key, s3_handler, fawkes_prote
             print(f"Cloaked file not found: {cloaked_path}")
             success = False
         
-        # Clean up temp directory
-        shutil.rmtree(temp_dir)
         return success
         
     except Exception as e:
         print(f"Error processing image {local_file_path}: {e}")
         return False
+    
+    finally:
+        # Ensure temp directory is cleaned up
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_protector, cloak_level, batch_size, interrupt_handler):
     """Process a video for AWS spot instance with interruption handling"""
-    
+    frames_dir = None
+    cloaked_frames_dir = None
+    output_path = None
+
     try:
         filename = os.path.basename(local_file_path)
         base_name = os.path.splitext(filename)[0]
@@ -650,18 +667,19 @@ def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_prote
             if success:
                 # Upload final video to S3
                 success = s3_handler.upload_processed_file(output_path, original_s3_key, cloak_level)
-                
+
                 if success:
+
                     # Clean up temp files in S3
                     s3_handler.cleanup_temp_files(original_s3_key)
-                    
-                    # Clean up local files
-                    os.remove(output_path)
             
             # Clean up local directories
             shutil.rmtree(frames_dir, ignore_errors=True)
             shutil.rmtree(cloaked_frames_dir, ignore_errors=True)
-            
+
+            if output_path and os.path.exists(output_path):
+                os.remove(output_path)  # Clean up local video file
+
             return success
         
         else:
@@ -672,12 +690,22 @@ def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_prote
             # Clean up local directories
             shutil.rmtree(frames_dir, ignore_errors=True)
             shutil.rmtree(cloaked_frames_dir, ignore_errors=True)
+            os.remove(output_path)  # Clean up local video file
             
             return False  # Will be resumed later
     
     except Exception as e:
         print(f"Error processing video {local_file_path}: {e}")
         return False
+    
+    finally:
+        # Always clean up local directories and files
+        if frames_dir and os.path.exists(frames_dir):
+            shutil.rmtree(frames_dir, ignore_errors=True)
+        if cloaked_frames_dir and os.path.exists(cloaked_frames_dir):
+            shutil.rmtree(cloaked_frames_dir, ignore_errors=True)
+        if output_path and os.path.exists(output_path):
+            os.remove(output_path)
 
 
 def extract_video_frames_from_position(video_path, output_dir, start_frame):
@@ -854,6 +882,7 @@ def main():
     # AWS Spot Instance arguments
     parser.add_argument("--aws-bucket", type=str, help="S3 bucket name for AWS spot instance mode (required with --aws-spot)")
     parser.add_argument("--aws-region", type=str, default="us-east-1", help="AWS region (default: us-east-1)")
+    parser.add_argument("--all-levels", action="store_true", help="Process all cloaking levels (low, mid, high) in AWS spot instance mode. Default is to process only the specified level.")
 
     # Classify mode only arguments
     parser.add_argument("--list", action="store_true", help="List files in the unsorted folder requiring classifications.")
@@ -868,7 +897,7 @@ def main():
     # Arguments exclusive to classify mode
     classify_only_args = ["list", "sync", "check"]
     # Arguments exclusive to aws-spot mode
-    aws_spot_only_args = ["aws_bucket", "aws_region"]
+    aws_spot_only_args = ["aws_bucket", "aws_region", "all_levels"]
 
     # Check for invalid argument combinations
     if args.cloak:
@@ -902,7 +931,8 @@ def main():
             bucket_name=args.aws_bucket,
             aws_region=args.aws_region,
             cloak_level=args.mode,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            all_levels=args.all_levels
         )
         
         if success:
