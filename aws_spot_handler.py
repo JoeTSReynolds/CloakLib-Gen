@@ -61,7 +61,7 @@ class SpotInterruptHandler:
                 token_request = urllib.request.Request(
                     token_url,
                     headers={'X-aws-ec2-metadata-token-ttl-seconds': '21600'},
-                    data=b''
+                    method='PUT'
                 )
                 with urlopen(token_request, timeout=2) as token_response:
                     token = token_response.read().decode('utf-8')
