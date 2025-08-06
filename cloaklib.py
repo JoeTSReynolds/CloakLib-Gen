@@ -2,6 +2,11 @@ import glob
 import os
 import json
 import shutil
+from datetime import datetime
+
+def get_timestamp():
+    """Get current timestamp in formatted string"""
+    return datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
 
 class CloakingLibrary:
     # SINGLETON CLOAKING LIBRARY CLASS
@@ -74,12 +79,13 @@ class CloakingLibrary:
                 "NoObstruction": 400,
                 "WithObstruction": 100
             },
-            "Race": {
+            "Race": { #Update these numbers
                 "White": 100,
-                "Brown": 145,
-                "East Asian": 115,
-                "Black": 75,
-                "Other": 15
+                "South Asian": 100,
+                "Arab": 100,
+                "East Asian": 100,
+                "Black": 100,
+                "Other": 100
             }
         }
     }
@@ -221,7 +227,7 @@ class CloakingLibrary:
     def classify_original(self, file_path, classifications, name):
         """Finds finds the actual classification from classifications, and moves original and cloaked versions in the info to appropriate folders""" 
         if not os.path.isfile(file_path):
-            print(f"Error: File '{file_path}' does not exist!")
+            print(f"{get_timestamp()} Error: File '{file_path}' does not exist!")
             return False
         
         # Load info.json
@@ -232,17 +238,17 @@ class CloakingLibrary:
         ext = os.path.splitext(file_path)[1]
         media_type = self.get_media_type(ext)
         if media_type == "unsupported":
-            print(f"Unsupported file format: {ext}")
+            print(f"{get_timestamp()} Unsupported file format: {ext}")
             return False
         
         # Check if classifications are valid
         for classification in classifications:
             main_classification, sub_classification = self.get_main_and_sub_classification(classification)
             if main_classification not in self.DATASET_REQUIREMENTS[media_type.capitalize()+"s"] or sub_classification not in self.DATASET_REQUIREMENTS[media_type.capitalize()+"s"][main_classification]:
-                print(f"Invalid classification: {classification}")
+                print(f"{get_timestamp()} Invalid classification: {classification}")
                 return False
         if not classifications:
-            print("No classifications provided, cannot classify the file.")
+            print(f"{get_timestamp()} No classifications provided, cannot classify the file.")
             return False
 
         # Choose classification
@@ -264,10 +270,10 @@ class CloakingLibrary:
                 original_path = os.path.join(self.unsorted_dir, original_file_name)
                 if os.path.exists(original_path):
                     shutil.move(original_path, new_path)
-                    print(f"Moved original file {original_file_name} to {new_path}")
+                    print(f"{get_timestamp()} Moved original file {original_file_name} to {new_path}")
             
             elif entry.get("original_file_name", None) == original_file_name and entry["cloak_level"] != "none":
-                print(f"Found cloaked file entry for {original_file_name}, updating classification and moving file...")
+                print(f"{get_timestamp()} Found cloaked file entry for {original_file_name}, updating classification and moving file...")
 
                 # Update the entry with the new classifications and actual classification
                 entry["name"] = name
@@ -285,7 +291,7 @@ class CloakingLibrary:
                 original_cloaked_path = os.path.join(self.unsorted_dir, cloaked_file_name)
                 if os.path.exists(original_cloaked_path):
                     shutil.move(original_cloaked_path, new_cloaked_path)
-                    print(f"Moved cloaked file {cloaked_file_name} to {new_cloaked_path}")
+                    print(f"{get_timestamp()} Moved cloaked file {cloaked_file_name} to {new_cloaked_path}")
 
         # Save updated info.json
         with open(self.info_json_path, "w") as f:
@@ -299,7 +305,7 @@ class CloakingLibrary:
         # If the file itself is a cloaked file (matches *_cloaked_<level>.<ext>), ignore
         base = os.path.basename(file_path)
         if any(base.endswith(f"_cloaked_{level}{os.path.splitext(base)[1]}") for level in ['low', 'mid', 'high']):
-            print(f"File {base} is not an original non cloaked file, ignoring...")
+            print(f"{get_timestamp()} File {base} is not an original non cloaked file, ignoring...")
             return []
 
 
@@ -315,26 +321,26 @@ class CloakingLibrary:
     def add_to_library(self, original_file_path, cloaked_file_path, cloaking_level, person_name, classifications=[]):
         """Adds a compatible image or video to the library"""
 
-        print(f"Adding {os.path.basename(original_file_path)} and {os.path.basename(cloaked_file_path)} to the library with cloaking level {cloaking_level} for person '{person_name}'")
+        print(f"{get_timestamp()} Adding {os.path.basename(original_file_path)} and {os.path.basename(cloaked_file_path)} to the library with cloaking level {cloaking_level} for person '{person_name}'")
 
         # TODO: Fix logic about adding different levels of cloaking on the same image - will currently add original image multiple times with different names
         
         # Check if files exist
         if not os.path.isfile(original_file_path):
-            print(f"Original file not found: {original_file_path}")
+            print(f"{get_timestamp()} Original file not found: {original_file_path}")
             return False
         if not os.path.isfile(cloaked_file_path):
-            print(f"Cloaked file not found: {cloaked_file_path}")
+            print(f"{get_timestamp()} Cloaked file not found: {cloaked_file_path}")
             return False
         
         original_ext = os.path.splitext(os.path.basename(original_file_path))[1]
         if not (original_ext in self.SUPPORTED_IMAGE_FORMATS + self.SUPPORTED_VIDEO_FORMATS):
-            print(f"Original file {os.path.basename(original_file_path)} has non compatible format for dataset. Supported formats:", " ".join(self.SUPPORTED_IMAGE_FORMATS + self.SUPPORTED_VIDEO_FORMATS))
+            print(f"{get_timestamp()} Original file {os.path.basename(original_file_path)} has non compatible format for dataset. Supported formats:", " ".join(self.SUPPORTED_IMAGE_FORMATS + self.SUPPORTED_VIDEO_FORMATS))
             return False
         
         cloaked_ext = os.path.splitext(os.path.basename(cloaked_file_path))[1]
         if not (cloaked_ext in self.SUPPORTED_IMAGE_FORMATS + self.SUPPORTED_VIDEO_FORMATS):
-            print(f"Cloaked file {os.path.basename(cloaked_file_path)} has non compatible format for dataset. Supported formats:", " ".join(self.SUPPORTED_IMAGE_FORMATS + self.SUPPORTED_VIDEO_FORMATS))
+            print(f"{get_timestamp()} Cloaked file {os.path.basename(cloaked_file_path)} has non compatible format for dataset. Supported formats:", " ".join(self.SUPPORTED_IMAGE_FORMATS + self.SUPPORTED_VIDEO_FORMATS))
             return False
 
         # Load info.json

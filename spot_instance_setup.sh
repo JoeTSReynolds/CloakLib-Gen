@@ -51,6 +51,6 @@ git clone -b colab_app https://github.com/JoeTSReynolds/CloakLib-Gen
 # 8. Run the script
 cd /root/CloakLib-Gen
 rm -rf frontend backend
-nohup /opt/miniconda/bin/conda run -n py38 python dataset_generator.py --aws-spot --aws-bucket jointcloaking --aws-region eu-west-2 --all-levels > cloak.log 2>&1 &
+nohup /opt/miniconda/envs/py38/bin/python -u dataset_generator.py --aws-spot --aws-bucket jointcloaking --aws-region eu-west-2 --all-levels >> cloak.log 2>&1 &
 
 echo "==== EC2 User Data Script COMPLETE ===="

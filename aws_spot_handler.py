@@ -15,6 +15,10 @@ from tqdm import tqdm
 import cv2
 from cloaklib import CloakingLibrary
 
+def get_timestamp():
+    """Get current timestamp in formatted string"""
+    return datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+
 class SpotInterruptHandler:
     """Handles AWS spot instance interruption gracefully"""
     
@@ -33,7 +37,7 @@ class SpotInterruptHandler:
     
     def _handle_interrupt(self, signum, frame):
         """Handle interrupt signals"""
-        print(f"\nReceived interrupt signal {signum}. Starting graceful shutdown...")
+        print(f"{get_timestamp()} Received interrupt signal {signum}. Starting graceful shutdown...")
         self.interrupted = True
         self.stop_monitoring.set()
         if self.cleanup_callback:
@@ -46,7 +50,7 @@ class SpotInterruptHandler:
         self.monitoring_thread = threading.Thread(target=self._monitor_spot_interruption)
         self.monitoring_thread.daemon = True
         self.monitoring_thread.start()
-        print("Started spot instance interruption monitoring...")
+        print(f"{get_timestamp()} Started spot instance interruption monitoring...")
     
     def _monitor_spot_interruption(self):
         """Monitor AWS metadata for spot interruption notice"""

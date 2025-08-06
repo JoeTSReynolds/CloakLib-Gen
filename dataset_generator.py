@@ -14,6 +14,10 @@ from aws_spot_handler import AWSS3Handler, SpotInterruptHandler, setup_aws_envir
 
 from cloaklib import CloakingLibrary
 
+def get_timestamp():
+    """Get current timestamp in formatted string"""
+    return datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+
 cloaking_library_instance = CloakingLibrary()
 
 # Image formats that can be converted to supported formats
@@ -37,7 +41,7 @@ def convert_image_to_supported_format(image_path, output_dir):
         # Read the image
         image = cv2.imread(image_path)
         if image is None:
-            print(f"Warning: Could not read image {image_path}")
+            print(f"{get_timestamp()} Warning: Could not read image {image_path}")
             return None
         
         # Create output filename with PNG extension
@@ -46,10 +50,10 @@ def convert_image_to_supported_format(image_path, output_dir):
         
         # Save as PNG
         cv2.imwrite(output_path, image)
-        print(f"Converted {os.path.basename(image_path)} to PNG format")
+        print(f"{get_timestamp()} Converted {os.path.basename(image_path)} to PNG format")
         return output_path
     except Exception as e:
-        print(f"Error converting {image_path}: {str(e)}")
+        print(f"{get_timestamp()} Error converting {image_path}: {str(e)}")
         return None
 
 def is_video_supported(file_path):
@@ -86,7 +90,7 @@ def process_image_batch(image_paths, fawkes_protector, batch_id=0, classificatio
         success_count = 0
         # Copy results to appropriate directories
         for i, image_path in enumerate(image_paths):
-            print("Adding to library:", image_path)
+            print(f"{get_timestamp()} Adding to library:", image_path)
             if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, name, classifications): #TODO: Is this correct imagepath?
                 success_count += 1
 
@@ -94,7 +98,7 @@ def process_image_batch(image_paths, fawkes_protector, batch_id=0, classificatio
         return success_count
         
     except Exception as e:
-        print(f"Error processing batch {batch_id}: {str(e)}")
+        print(f"{get_timestamp()} Error processing batch {batch_id}: {str(e)}")
         return 0
 
 def process_image(image_path, fawkes_protector, classifications=[], name=""):
@@ -110,7 +114,7 @@ def extract_frames(video_path, output_dir):
     frame_count = int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = frame_count/fps
     
-    print(f"Video has {frame_count} frames with FPS {fps} (duration: {duration:.2f}s)")
+    print(f"{get_timestamp()} Video has {frame_count} frames with FPS {fps} (duration: {duration:.2f}s)")
     
     count = 0
     frame_paths = []
@@ -131,7 +135,7 @@ def create_video_from_frames(original_path, frame_dir, output_path, fps, fawkes_
     """Create a video from a directory of frames"""
     frame_files = sorted(glob.glob(os.path.join(frame_dir, "frame_*.png")))
     if not frame_files:
-        print("No frames found to create video")
+        print(f"{get_timestamp()} No frames found to create video")
         return False
         
     # Read the first frame to get dimensions
@@ -198,7 +202,7 @@ def process_video_frames_batch(frame_paths, fawkes_protector, cloaked_frames_dir
         return len(frame_paths)
         
     except Exception as e:
-        print(f"Error processing video frame batch {batch_id}: {str(e)}")
+        print(f"{get_timestamp()} Error processing video frame batch {batch_id}: {str(e)}")
         # Copy original frames as fallback
         for frame_path in frame_paths:
             frame_filename = os.path.basename(frame_path)
@@ -220,13 +224,13 @@ def process_video(video_path, fawkes_protector, batch_size=10, num_threads=1, cl
         os.makedirs(frames_dir, exist_ok=True)
         os.makedirs(cloaked_frames_dir, exist_ok=True)
         
-        print(f"Processing video: {filename}")
+        print(f"{get_timestamp()} Processing video: {filename}")
         
         # Extract frames from video
         frame_paths, fps = extract_frames(video_path, frames_dir)
         
         # Process frames in batches
-        print(f"Cloaking {len(frame_paths)} frames in batches of {batch_size}...")
+        print(f"{get_timestamp()} Cloaking {len(frame_paths)} frames in batches of {batch_size}...")
         
         # Create batches
         frame_batches = [frame_paths[i:i + batch_size] for i in range(0, len(frame_paths), batch_size)]
@@ -259,13 +263,13 @@ def process_video(video_path, fawkes_protector, batch_size=10, num_threads=1, cl
         shutil.rmtree(temp_dir)
         
         if success:
-            print(f"Successfully processed video: {filename}")
+            print(f"{get_timestamp()} Successfully processed video: {filename}")
             return True
         else:
-            print(f"Failed to create cloaked video: {filename}")
+            print(f"{get_timestamp()} Failed to create cloaked video: {filename}")
             return False
     except Exception as e:
-        print(f"Error processing video {filename}: {str(e)}")
+        print(f"{get_timestamp()} Error processing video {filename}: {str(e)}")
         return False
 
 def process_single_image(image_path, fawkes_protector, classifications=[], name=""):
@@ -280,10 +284,10 @@ def process_single_image(image_path, fawkes_protector, classifications=[], name=
         if converted_path:
             image_path = converted_path
         else:
-            print(f"Failed to convert {image_path}")
+            print(f"{get_timestamp()} Failed to convert {image_path}")
             return False
     elif not is_image_supported(image_path):
-        print(f"Unsupported image format: {image_path}")
+        print(f"{get_timestamp()} Unsupported image format: {image_path}")
         return False
 
     success = process_image(image_path, fawkes_protector, classifications, name)
@@ -299,7 +303,7 @@ def process_single_image(image_path, fawkes_protector, classifications=[], name=
 def process_directory(input_dir, batch_size=10, num_threads=1, mode="high", classifications=[], name=""):
     """Process all supported files in the input directory"""
     
-    print("Initializing Fawkes protector...")
+    print(f"{get_timestamp()} Initializing Fawkes protector...")
     
     from fawkes.protection import Fawkes
 
@@ -311,9 +315,9 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high", clas
             batch_size=batch_size,
             mode=mode
         )
-        print(f"Fawkes protector initialized with mode: {mode}")
+        print(f"{get_timestamp()} Fawkes protector initialized with mode: {mode}")
     except Exception as e:
-        print(f"Failed to initialize Fawkes: {str(e)}")
+        print(f"{get_timestamp()} Failed to initialize Fawkes: {str(e)}")
         sys.exit(1)
     
     # Get all files in the input directory
@@ -324,8 +328,8 @@ def process_directory(input_dir, batch_size=10, num_threads=1, mode="high", clas
     convertible_files = [f for f in all_files if is_image_convertible(f)]
     video_files = [f for f in all_files if is_video_supported(f)]
     
-    print(f"\nFound {len(image_files)} supported images to process")
-    print(f"Found {len(convertible_files)} convertible images to process")
+    print(f"{get_timestamp()} Found {len(image_files)} supported images to process")
+    print(f"{get_timestamp()} Found {len(convertible_files)} convertible images to process")
     
     # Convert unsupported images first
     converted_images = []
