@@ -203,19 +203,60 @@ const [fontsLoaded] = useFonts({
         </View>
         <View style={styles.imgcontainer}>
           <View style={styles.columnleft}>
-            <Image source={require('./person1.jpeg')} style={styles.cloakedimage} />
+            <Image source={require('./person1.jpeg')} style={styles.cloakedimage}/>
+            <Text style={styles.imgcaption}>{"\n"} Raw Image {"\n"} </Text>
           </View>
           <View style={styles.columnright}>
-            <Image source={require('./person1_cloaked.png')} style={styles.cloakedimage} />
+            <Image source={require('./person1cloaked.png')} style={styles.cloakedimage}/>
+            <Text style={styles.imgcaption}>{"\n"}  Cloaked Image {"\n"} </Text>
           </View>
-</View>
+        </View>
+        <View style={styles.textcontainer}>
+          <Text style={styles.sectionHeading}>
+            Why it matters?
+          </Text>
+          <Text style={styles.textbody}>
+            As facial recognition is adopted across industries, image cloaking undermines the integrity and reliability of these systems. From fraud and identity evasion to misinformation and online impersonation, cloaking enables harmful behaviours that evade digital accountability.
+
+            {"\n"} {"\n"}
+            
+            We help businesses, institutions, and governments stay ahead of identity evasion tactics by revealing what's hidden beneath the surface. We make it possible to detect when and where these manipulations occur — before they compromise trust.
+          </Text>
+        </View>
+        <View style={styles.textcontainer}>
+          <Text style={styles.sectionHeading}>
+            Real World Use Cases
+          </Text>
+          <Text style={styles.textbody}>
+            Our detection tool is built for flexible integration into a wide range of environments:{"\n"}{"\n"}
+            
+            <b>Security & Surveillance: </b> Detect cloaked faces in CCTV footage or live streams where traditional recognition fails. Improve reliability in high-risk or high-traffic environments.{"\n"}{"\n"}
+
+            <b>Authentication Systems: </b> Protect biometric logins, identity verification tools, and government databases against cloaked uploads or spoofed documents.{"\n"}{"\n"}
+
+            <b>Social Media & Moderation: </b> Identify cloaked or manipulated profile images and prevent misuse by bots, fake accounts, or impersonators.{"\n"}{"\n"}
+
+            <b>Digital Forensics & Law Enforcement: </b> Assist investigations by flagging manipulated images submitted as evidence or used in public content.{"\n"}{"\n"}
+
+            <b>Dataset Integrity Audits: </b> Ensure that training sets for facial recognition or ML models haven't been adversarially poisoned with cloaked data — a growing concern in AI research.{"\n"}{"\n"}
+
+            <b>E-commerce & Marketplace Trust: </b> Verify authenticity of user-submitted photos in marketplaces or platforms with real-person verification policies (e.g., dating apps, gig economy platforms).{"\n"}{"\n"}
+
+            Our solution is lightweight, scalable, and designed for integration — from research environments to enterprise applications.
+          </Text>
+        </View>
+        <View style={styles.textcontainer}>
+          <Text style={styles.sectionHeading}>
+            Try Doubleday
+          </Text>
+        </View>
         <View style={styles.headerRow}>
           <TouchableOpacity
             onPress={() => setShowEnrolledModal(true)}
             style={styles.viewEnrolledButton}
           >
             <Text style={styles.viewEnrolledButtonText}>
-              View Enrolled ({enrolledPeople.length})
+              View Enrolled Persons({enrolledPeople.length})
             </Text>
           </TouchableOpacity>
         </View>
@@ -224,7 +265,7 @@ const [fontsLoaded] = useFonts({
           {/* Enrollment Side */}
           <View style={styles.sectionContainer}>
             <View style={styles.card}>
-              <Text style={styles.sectionTitle}>Enroll Person</Text>
+              <Text style={styles.cardHeading}>Enroll Person</Text>
               
               <TouchableOpacity
                 onPress={() => {
@@ -289,7 +330,7 @@ const [fontsLoaded] = useFonts({
           {/* Recognition Side */}
           <View style={styles.sectionContainer}>
             <View style={styles.card}>
-              <Text style={styles.sectionTitle}>Recognize Face</Text>
+              <Text style={styles.cardHeading}>Recognize Face</Text>
               
               <TouchableOpacity
                 onPress={() => pickImage('recognition')}
@@ -410,6 +451,43 @@ const [fontsLoaded] = useFonts({
             </View>
           </View>
         </Modal>
+        <View style={styles.textcontainer}>
+            <Text style={styles.sectionHeading}>
+              What makes our dataset unique?
+            </Text>
+            <Text style={styles.textbody}>
+              <b>To build and test our detection system, we've developed a powerful and versatile dataset: one of the first of its kind.
+              {"\n"}{"\n"}
+              Our dataset is designed to stress test image cloaking detection with real-world scenarios and edge cases, including:</b>{"\n"}{"\n"}
+
+              <b>Supported file types:</b>{"\n"}
+
+              We support a multitude of files:  JPEG, PNG, WEBP, BMP, TIFF, TIF, MP4, AVI, MOV, WMV and even GIFs. {"\n"}{"\n"}
+
+              <b>Subjects at multiple angles:</b>{"\n"}
+
+              Ensuring performance in natural, everyday photos, not just ideal conditions.{"\n"}{"\n"}
+
+              <b>Varying levels of cloaking:</b>{"\n"}
+
+              From lightly cloaked to heavily altered, so we capture subtle manipulations and includes non-cloaked images to precisely evaluate detection success rates.{"\n"}{"\n"}
+
+              <b>Video compatibility:</b>{"\n"}
+
+              While most cloaking tools only modify still images, we're extending analysis to video content.{"\n"}{"\n"}
+
+              <b>Edge cases:</b>{"\n"}
+
+              Including low-resolution images, occlusions, and partial face views.{"\n"}{"\n"}
+
+              <b>Diverse Dataset:</b>{"\n"}
+
+              We include a range of age, gender, ethnicity so that it is representative of the world population. {"\n"}{"\n"}
+            </Text>
+          </View>
+          <View style={styles.footer}>
+
+          </View>
       </View>
     </ScrollView>
   );
@@ -418,6 +496,9 @@ const [fontsLoaded] = useFonts({
 export default FaceRecognitionScreen;
 
 const styles = StyleSheet.create({
+  footer: {
+
+  },
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
@@ -452,20 +533,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginTop: 10,
+    marginBottom: 10,
     fontFamily: 'Inter_400Regular',
+    marginLeft: 30,
   },
   viewEnrolledButton: {
-    backgroundColor: '#6B7280',
-    borderRadius: 8,
-    padding: 12,
+    backgroundColor: '#454545',
+    borderRadius: 10,
+    padding: 15,
     alignItems: 'center',
-    fontFamily: 'Inter_400Regular',
   },
   viewEnrolledButtonText: {
-    color: 'white',
+    color: '#ffffff',
     fontWeight: '500',
     fontFamily: 'Inter_400Regular',
+    fontSize: 20,
+  },
+  cardHeading :{
+    fontSize: 24,
+    marginBottom: 17,
+    color: '#000000',
+    fontWeight: '500',
   },
   desktopLayout: {
     flexDirection: 'row',
@@ -478,6 +567,7 @@ const styles = StyleSheet.create({
   sectionContainer: {
     flex: 1,
     marginHorizontal: 4,
+    padding: 30,
   },
   card: {
     backgroundColor: '#fffff',
@@ -488,21 +578,21 @@ const styles = StyleSheet.create({
       width: 0,
       height: 2,
     },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
     elevation: 5,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '600',
     marginBottom: 16,
-    color: '#374151',
+    color: '#000000',
     fontFamily: 'Inter_400Regular',
   },
   textcontainer: {
     marginTop: 10,
     marginBottom: 10,
-    padding: 25,
+    padding: 30,
     width: '100%',
   },
   sectionHeading: {
@@ -518,41 +608,46 @@ const styles = StyleSheet.create({
     fontWeight: '400',
   },
   imgcontainer: {
-    flexDirection: 'row', // horizontal layout
-    justifyContent: 'space-between', // space between the 2 columns
-    padding: 10,
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    padding: 20,
   },
   columnleft: {
-    flex: 1,
+    flex: 2,
     alignItems: 'center',
   },
   columnright: {
-    flex: 1,
+    flex: 2,
     alignItems: 'center',
   },
   cloakedimage: {
-    width: '90%', // relative width inside column
-    aspectRatio: 1, // keeps it square
-    resizeMode: 'cover',
-    borderRadius: 10,
+    height: 500,
+    aspectRatio: 1, 
+    resizeMode: 'contain',
+  },
+  imgcaption: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 20,
   },
   selectImageButton: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#000000',
     padding: 12,
     borderRadius: 6,
     alignItems: 'center',
     marginBottom: 16,
   },
   recognizeImageButton: {
-    backgroundColor: '#7C3AED',
+    backgroundColor: '#000000',
     padding: 12,
     borderRadius: 6,
     alignItems: 'center',
     marginBottom: 16,
   },
   selectImageButtonText: {
-    color: 'white',
+    color: '#ffffff',
     fontWeight: '500',
+    fontSize: 20,
+    fontFamily: 'Inter_400Regular'
   },
   selectedImage: {
     width: '100%',
@@ -563,6 +658,8 @@ const styles = StyleSheet.create({
   textInput: {
     borderWidth: 1,
     borderColor: '#D1D5DB',
+    fontFamily: 'Inter_400Regular',
+    fontSize: 16,
     borderRadius: 6,
     padding: 12,
     marginBottom: 16,
@@ -574,6 +671,7 @@ const styles = StyleSheet.create({
   thresholdLabel: {
     color: '#374151',
     marginBottom: 8,
+    fontSize: 16
   },
   actionButton: {
     padding: 12,
@@ -582,17 +680,19 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   enrollButton: {
-    backgroundColor: '#059669',
+    backgroundColor: '#000000',
   },
   recognizeButton: {
-    backgroundColor: '#D97706',
+    backgroundColor: '#000000',
   },
   disabledButton: {
-    backgroundColor: '#9CA3AF',
+    backgroundColor: '#828282',
   },
   actionButtonText: {
-    color: 'white',
+    color: '#ffffff',
     fontWeight: '500',
+    fontFamily: 'Inter_400Regular',
+    fontSize: 20,
   },
   successMessage: {
     marginTop: 8,

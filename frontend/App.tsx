@@ -27,6 +27,7 @@ export default function App() {
                     height: 110,
                     marginLeft: '20%',
                     marginTop: '40%',
+                    resizeMode: 'contain',
                   }}
                   resizeMode="contain"
                 />
