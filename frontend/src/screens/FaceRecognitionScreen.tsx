@@ -14,6 +14,7 @@ import {
   StyleSheet,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import DropDownPicker from 'react-native-dropdown-picker';
 import faceRecognitionService, { FaceMatch, EnrollmentResult, RecognitionResult, EnrolledPerson } from '../services/faceRecognition';
 import {
   useFonts,
@@ -34,6 +35,14 @@ const FaceRecognitionScreen: React.FC = () => {
   const [enrollmentMessage, setEnrollmentMessage] = useState<string>('');
   const [enrolledPeople, setEnrolledPeople] = useState<EnrolledPerson[]>([]);
   const [showEnrolledModal, setShowEnrolledModal] = useState<boolean>(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [selectedLabel, setSelectedLabel] = useState(null);
+  const [dropdownItems, setDropdownItems] = useState([
+    { label: 'No Cloaking', value: 'no cloaking' },
+    { label: 'Low Cloaking', value: 'low' },
+    { label: 'Medium Cloaking', value: 'mid' },
+    { label: 'High Cloaking', value: 'high' }
+  ]);
 
 const [fontsLoaded] = useFonts({
   Inter_400Regular,
@@ -298,6 +307,18 @@ const [fontsLoaded] = useFonts({
                 placeholderTextColor="#9CA3AF"
               />
 
+
+              <DropDownPicker style={styles.textInput}
+                open={dropdownOpen}
+                value={selectedLabel}
+                items={dropdownItems}
+                setOpen={setDropdownOpen}
+                setValue={setSelectedLabel}
+                setItems={setDropdownItems}
+                placeholder="Select Cloaking Level"
+                dropDownContainerStyle={{ borderColor: '#ccc' }}
+              />
+
               <TouchableOpacity
                 onPress={() => {
                   console.log('Enrolling face with image:', enrollmentImage, 'and name:', personName);
@@ -486,7 +507,7 @@ const [fontsLoaded] = useFonts({
             </Text>
           </View>
           <View style={styles.footer}>
-
+              <Image source={require('./logo.png')} style={styles.footerimg}></Image>
           </View>
       </View>
     </ScrollView>
@@ -497,7 +518,13 @@ export default FaceRecognitionScreen;
 
 const styles = StyleSheet.create({
   footer: {
-
+    padding: 15,
+  },
+  footerimg: {
+    width: 110,
+    height: 110,
+    resizeMode: 'contain',
+    marginLeft: 5,
   },
   container: {
     flex: 1,
