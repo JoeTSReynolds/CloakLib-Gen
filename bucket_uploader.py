@@ -151,9 +151,303 @@ def is_locked(s3, bucket, name, ext):
     except s3.exceptions.ClientError:
         return False
 
+
+def build_label_map_from_s3(s3, bucket):
+    """Build label map from S3 bucket structure instead of CSV"""
+    label_map = {"Images": {}, "Videos": {}}
+    paginator = s3.get_paginator("list_objects_v2")
+    
+    # Pattern to extract media type, category, value, and filename from S3 keys
+    pattern = re.compile(
+        r"^Dataset/Uncloaked/"
+        r"(Images|Videos)/"
+        r"([^/]+)/"
+        r"([^/]+)/"
+        r"([^/]+)$"
+    )
+    
+    for page in paginator.paginate(Bucket=bucket, Prefix="Dataset/Uncloaked/"):
+        for obj in page.get("Contents", []):
+            m = pattern.match(obj["Key"])
+            if not m:
+                continue
+            
+            media_type, category, value, filename = m.groups()
+            
+            # Extract base name (remove extension)
+            name = os.path.splitext(filename)[0]
+            
+            # Initialize labels dict if not exists
+            if name not in label_map[media_type]:
+                label_map[media_type][name] = {}
+            
+            # Store the category-value pair for this file
+            label_map[media_type][name][category] = value
+    
+    return label_map
+
+def find_duplicates(s3, bucket):
+    """Find duplicate filenames across all folders in the dataset"""
+    duplicates = {"Images": defaultdict(list), "Videos": defaultdict(list)}
+    paginator = s3.get_paginator("list_objects_v2")
+    
+    # Pattern to extract media type, category, value, and filename from S3 keys
+    pattern = re.compile(
+        r"^Dataset/Uncloaked/"
+        r"(Images|Videos)/"
+        r"([^/]+)/"
+        r"([^/]+)/"
+        r"([^/]+)$"
+    )
+    
+    for page in paginator.paginate(Bucket=bucket, Prefix="Dataset/Uncloaked/"):
+        for obj in page.get("Contents", []):
+            m = pattern.match(obj["Key"])
+            if not m:
+                continue
+            
+            media_type, category, value, filename = m.groups()
+            
+            # Store the full S3 key info for each file
+            file_info = {
+                "key": obj["Key"],
+                "category": category,
+                "value": value,
+                "filename": filename,
+                "size": obj["Size"]
+            }
+            
+            duplicates[media_type][filename].append(file_info)
+    
+    # Filter to only actual duplicates (files with same name in multiple locations)
+    actual_duplicates = {"Images": {}, "Videos": {}}
+    for media_type in duplicates:
+        for filename, locations in duplicates[media_type].items():
+            if len(locations) > 1:
+                actual_duplicates[media_type][filename] = locations
+    
+    return actual_duplicates
+
+def clean_duplicates(s3, bucket):
+    """Clean duplicate files, keeping only one copy in the best location"""
+    print("[CLEAN-DUPLICATES] Finding duplicates...")
+    duplicates = find_duplicates(s3, bucket)
+    
+    total_duplicates = sum(len(files) for files in duplicates["Images"].values()) + \
+                      sum(len(files) for files in duplicates["Videos"].values())
+    
+    if total_duplicates == 0:
+        print("[CLEAN-DUPLICATES] No duplicates found.")
+        return
+    
+    print(f"[CLEAN-DUPLICATES] Found {total_duplicates} duplicate file groups to process...")
+    
+    # Get current counts to make informed decisions about which copy to keep
+    counts = build_current_counts(s3, bucket)
+    
+    files_deleted = 0
+    
+    for media_type in ["Images", "Videos"]:
+        for filename, locations in duplicates[media_type].items():
+            print(f"\n[CLEAN-DUPLICATES] Processing duplicate: {filename}")
+            print(f"  Found in {len(locations)} locations:")
+            for loc in locations:
+                print(f"    - {loc['category']}/{loc['value']}")
+            
+            # Determine which copy to keep based on dataset balance
+            best_location = None
+            best_ratio = float('inf')
+            
+            for loc in locations:
+                category = loc['category']
+                value = loc['value']
+                
+                # Check if this category/value is in requirements
+                if (category in DATASET_REQUIREMENTS[media_type] and 
+                    value in DATASET_REQUIREMENTS[media_type][category]):
+                    
+                    current_count = counts[media_type][category].get(value, 0)
+                    required_count = DATASET_REQUIREMENTS[media_type][category][value]
+                    ratio = current_count / required_count
+                    
+                    # Prefer locations that are most under-represented
+                    if ratio < best_ratio:
+                        best_ratio = ratio
+                        best_location = loc
+                
+                # If no valid requirements match, keep the first one
+                if best_location is None:
+                    best_location = loc
+            
+            print(f"  Keeping copy in: {best_location['category']}/{best_location['value']}")
+            
+            # Delete all other copies
+            for loc in locations:
+                if loc == best_location:
+                    continue
+                
+                # Check if file is locked
+                base_name = os.path.splitext(filename)[0]
+                ext = os.path.splitext(filename)[1]
+                if is_locked(s3, bucket, base_name, ext):
+                    print(f"  Skipping locked file: {loc['key']}")
+                    continue
+                
+                try:
+                    # Delete the uncloaked file
+                    s3.delete_object(Bucket=bucket, Key=loc['key'])
+                    print(f"  Deleted: {loc['key']}")
+                    files_deleted += 1
+                    
+                    # Also delete corresponding cloaked files if they exist
+                    cloaked_deleted = 0
+                    for level in ("low", "mid", "high"):
+                        cloaked_ext = ".png" if media_type == "Images" else ".mp4"
+                        cloaked_name = f"{base_name}_cloaked_{level}{cloaked_ext}"
+                        cloaked_key = f"Dataset/Cloaked/{media_type}/{loc['category']}/{loc['value']}/{cloaked_name}"
+                        
+                        try:
+                            s3.delete_object(Bucket=bucket, Key=cloaked_key)
+                            print(f"    Deleted cloaked: {cloaked_key}")
+                            cloaked_deleted += 1
+                        except s3.exceptions.ClientError as e:
+                            if e.response['Error']['Code'] != 'NoSuchKey':
+                                print(f"    Warning: Failed to delete cloaked file {cloaked_key}: {e}")
+                    
+                    if cloaked_deleted > 0:
+                        print(f"    Deleted {cloaked_deleted} cloaked versions")
+                
+                except s3.exceptions.ClientError as e:
+                    print(f"  Error deleting {loc['key']}: {e}")
+            
+            # Update counts for the location we kept
+            counts[media_type][best_location['category']][best_location['value']] -= (len(locations) - 1)
+    
+    print(f"\n[CLEAN-DUPLICATES] Cleanup complete. Deleted {files_deleted} duplicate files.")
+    print("[CLEAN-DUPLICATES] Updated dataset counts after cleanup.")
+    
+    # Print final status
+    print_dataset_info(s3, bucket)
+
+def check_dataset_health(s3, bucket):
+    """Check dataset health and report discrepancies"""
+    print("[HEALTH] Checking dataset health...")
+    
+    # Build sets of uncloaked files
+    uncloaked_files = {"Images": set(), "Videos": set()}
+    paginator = s3.get_paginator("list_objects_v2")
+    
+    # Pattern to extract media type, category, value, and filename from uncloaked S3 keys
+    uncloaked_pattern = re.compile(
+        r"^Dataset/Uncloaked/"
+        r"(Images|Videos)/"
+        r"([^/]+)/"
+        r"([^/]+)/"
+        r"([^/]+)$"
+    )
+    
+    print("[HEALTH] Scanning uncloaked files...")
+    for page in paginator.paginate(Bucket=bucket, Prefix="Dataset/Uncloaked/"):
+        for obj in page.get("Contents", []):
+            m = uncloaked_pattern.match(obj["Key"])
+            if not m:
+                continue
+            
+            media_type, category, value, filename = m.groups()
+            base_name = os.path.splitext(filename)[0]
+            
+            # Store the base name with its location info
+            uncloaked_files[media_type].add((base_name, category, value))
+    
+    print(f"[HEALTH] Found {len(uncloaked_files['Images'])} uncloaked images and {len(uncloaked_files['Videos'])} uncloaked videos")
+    
+    # Now check cloaked files for orphans
+    cloaked_pattern = re.compile(
+        r"^Dataset/Cloaked/"
+        r"(Images|Videos)/"
+        r"([^/]+)/"
+        r"([^/]+)/"
+        r"([^/]+)$"
+    )
+    
+    orphaned_cloaked = {"Images": [], "Videos": []}
+    total_cloaked = {"Images": 0, "Videos": 0}
+    
+    print("[HEALTH] Scanning cloaked files...")
+    for page in paginator.paginate(Bucket=bucket, Prefix="Dataset/Cloaked/"):
+        for obj in page.get("Contents", []):
+            m = cloaked_pattern.match(obj["Key"])
+            if not m:
+                continue
+            
+            media_type, category, value, filename = m.groups()
+            total_cloaked[media_type] += 1
+            
+            # Extract base name from cloaked filename (remove _cloaked_level.ext)
+            # Expected format: name_cloaked_level.ext
+            base_name = filename
+            if "_cloaked_" in filename:
+                base_name = filename.split("_cloaked_")[0]
+            else:
+                # Fallback: just remove extension
+                base_name = os.path.splitext(filename)[0]
+            
+            # Check if corresponding uncloaked file exists
+            if (base_name, category, value) not in uncloaked_files[media_type]:
+                orphaned_cloaked[media_type].append({
+                    "key": obj["Key"],
+                    "base_name": base_name,
+                    "category": category,
+                    "value": value,
+                    "filename": filename
+                })
+    
+    # Report results
+    print("\n" + "="*80)
+    print("DATASET HEALTH REPORT")
+    print("="*80)
+    
+    total_orphans = len(orphaned_cloaked["Images"]) + len(orphaned_cloaked["Videos"])
+    
+    if total_orphans == 0:
+        print("✅ DATASET HEALTH: GOOD")
+        print("   No orphaned cloaked files found.")
+    else:
+        print("⚠️  DATASET HEALTH: ISSUES DETECTED")
+        print(f"   Found {total_orphans} orphaned cloaked files.")
+    
+    for media_type in ["Images", "Videos"]:
+        print(f"\n{media_type.upper()}:")
+        print(f"  Total cloaked files: {total_cloaked[media_type]}")
+        print(f"  Orphaned cloaked files: {len(orphaned_cloaked[media_type])}")
+        
+        if orphaned_cloaked[media_type]:
+            print("  Orphaned files:")
+            for orphan in orphaned_cloaked[media_type][:10]:  # Show first 10
+                print(f"    - {orphan['key']}")
+                print(f"      Missing uncloaked: Dataset/Uncloaked/{media_type}/{orphan['category']}/{orphan['value']}/{orphan['base_name']}.{'jpg' if media_type == 'Images' else 'mp4'}")
+            
+            if len(orphaned_cloaked[media_type]) > 10:
+                print(f"    ... and {len(orphaned_cloaked[media_type]) - 10} more")
+    
+    print("\n" + "="*80)
+    
+    if total_orphans > 0:
+        print("\nRECOMMENDATIONS:")
+        print("- Review the orphaned cloaked files listed above")
+        print("- These files may be consuming storage space unnecessarily")
+        print("- Consider removing orphaned files if they're no longer needed")
+        print("- Check if the original uncloaked files were accidentally deleted")
+    
+    return {
+        "total_orphans": total_orphans,
+        "orphaned_files": orphaned_cloaked,
+        "total_cloaked": total_cloaked
+    }
+
 def rebalance(s3, bucket, csv_file, tolerance):
     print("[REBALANCE] Starting rebalance…")
-    counts = build_current_counts(s3, bucket)
+    counts = None
     print("[REBALANCE] Initial counts built.")
 
     # Load CSV (skip first line), and build image/video label map
@@ -187,6 +481,7 @@ def rebalance(s3, bucket, csv_file, tolerance):
     for media_type in ["Images", "Videos"]:
         print(f"[REBALANCE] Processing {media_type}…")
         while True:
+            counts = build_current_counts(s3, bucket)
             average, ratios = compute_ratios(counts, media_type)
             low = [(cat, val, r) for (cat, val, r) in ratios if r < average - tolerance]
             high = [(cat, val, r) for (cat, val, r) in ratios if r > average + tolerance]
@@ -227,6 +522,8 @@ def rebalance(s3, bucket, csv_file, tolerance):
                             print(f"[REBALANCE] Moved {name}{ext} from {cat_hi}/{val_hi} → {cat_lo}/{val_lo}")
                             break
                         except s3.exceptions.ClientError as e:
+                            if e.response['Error']['Code'] == 'NoSuchKey':
+                                continue
                             print(f"[WARN] Failed to move {name}{ext}: {e}")
                             continue
                     if moved_any:
@@ -234,7 +531,7 @@ def rebalance(s3, bucket, csv_file, tolerance):
                 if moved_any:
                     break
             if not moved_any:
-                print(f"[REBALANCE] No eligible moves found for {media_type}. Stopping.")
+                print(f"[REBALANCE] No more eligible moves found for {media_type}. Stopping.")
                 break
 
 # -------------------------------------------------------------------
@@ -246,10 +543,12 @@ def main():
     p.add_argument("--reset", action="store_true", help="Delete all .jpg/.mp4 under Dataset/ in the bucket and exit")
     p.add_argument("--rebalance", action="store_true", help="Rebalance dataset distribution")
     p.add_argument("--info", action="store_true", help="Display dataset status information")
+    p.add_argument("--clean-duplicates", action="store_true", help="Remove duplicate filenames, keeping only one copy in the most balanced location")
+    p.add_argument("--health", action="store_true", help="Check dataset health and report discrepancies")
     p.add_argument("--tolerance", type=float, default=0.1, help="Rebalance tolerance (default 0.1)")
     args = p.parse_args()
 
-    s3 = boto3.client("s3")
+    s3 = boto3.client("s3", region_name="eu-west-2")
     bucket = args.bucket_name
 
     if args.reset:
@@ -258,6 +557,14 @@ def main():
 
     if args.info:
         print_dataset_info(s3, bucket)
+        sys.exit(0)
+
+    if args.health:
+        check_dataset_health(s3, bucket)
+        sys.exit(0)
+
+    if args.clean_duplicates:
+        clean_duplicates(s3, bucket)
         sys.exit(0)
 
     if args.rebalance:
