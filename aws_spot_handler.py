@@ -133,6 +133,36 @@ class AWSS3Handler:
         # Dataset requirements from CloakingLibrary
         self.dataset_requirements = CloakingLibrary.DATASET_REQUIREMENTS
     
+    def _has_gpu_available(self):
+        """Check if GPU is available for processing"""
+        try:
+            import torch
+            return torch.cuda.is_available() and torch.cuda.device_count() > 0
+        except ImportError:
+            # If torch is not available, try alternative methods
+            try:
+                import subprocess
+                result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=5)
+                return result.returncode == 0
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                return False
+        except Exception:
+            return False
+    
+    def _separate_files_by_type(self, file_list):
+        """Separate files into images and videos"""
+        images = []
+        videos = []
+        
+        for file_key in file_list:
+            ext = os.path.splitext(file_key)[1].lower()
+            if ext in self.SUPPORTED_IMAGE_FORMATS:
+                images.append(file_key)
+            elif ext in self.SUPPORTED_VIDEO_FORMATS:
+                videos.append(file_key)
+        
+        return images, videos
+    
     def list_files_in_prefix(self, prefix):
         """List all files in S3 with given prefix"""
         try:
@@ -276,27 +306,30 @@ class AWSS3Handler:
             return "unknown"
     
     def get_next_file_to_process(self):
-        """Find the next uncloaked file that needs processing from all subfolders"""
-        # Use the deep scanning method to get all files
-        uncloaked_files = self.scan_all_subfolders_for_files()
+        """Find the next uncloaked file that needs processing from all subfolders
+        Prioritizes videos if GPU is available, otherwise prioritizes images"""
         
-        for file_key in uncloaked_files:
-            file_name = os.path.basename(file_key)
-
-            # Check if already processed (look for cloaked versions)
-            if self._is_already_processed(file_key):
-                continue
-
-            if self._is_file_failed(file_key):
-                print(f"Skipping failed file: {file_key}")
-                continue
-
-            # Try to create a lock for this file
-            lock_key = self.create_lock(file_name)
-            if lock_key:
-                return file_key, lock_key
+        has_gpu = self._has_gpu_available()
         
-        return None, None
+        if has_gpu:
+            print(f"{get_timestamp()} GPU detected. Looking for videos first, then images...")
+            # Try videos first
+            result = self._find_next_unprocessed_file_in_directory("Videos")
+            if result[0] is not None:
+                return result[0], result[1]
+            # Fall back to images
+            result = self._find_next_unprocessed_file_in_directory("Images")
+            return result[0], result[1]
+        else:
+            print(f"{get_timestamp()} No GPU detected. Looking for images first, then videos...")
+            # Try images first
+            result = self._find_next_unprocessed_file_in_directory("Images")
+            if result[0] is not None:
+                return result[0], result[1]
+            # Fall back to videos if only videos left
+            print(f"{get_timestamp()} No images available, checking for videos...")
+            result = self._find_next_unprocessed_file_in_directory("Videos")
+            return result[0], result[1]
     
     def _is_already_processed(self, uncloaked_file_key):
         """Check if a file has already been processed (has cloaked versions)"""
@@ -340,30 +373,138 @@ class AWSS3Handler:
         return False
     
     def get_next_file_to_process_all_levels(self):
-        """Find the next uncloaked file that needs processing in any missing protection level"""
-        # Use the deep scanning method to get all files
-        uncloaked_files = self.scan_all_subfolders_for_files()
+        """Find the next uncloaked file that needs processing in any missing protection level
+        Prioritizes videos if GPU is available, otherwise prioritizes images"""
         
-        for file_key in uncloaked_files:
-            file_name = os.path.basename(file_key)
-
-            # Check which levels are missing
-            missing_levels = self._get_missing_cloak_levels(file_key)
+        has_gpu = self._has_gpu_available()
+        
+        if has_gpu:
+            print(f"{get_timestamp()} GPU detected. Looking for videos first, then images...")
+            # Try videos first
+            result = self._find_next_file_in_directory("Videos")
+            if result[0] is not None:
+                return result
+            # Fall back to images
+            result = self._find_next_file_in_directory("Images") 
+            return result
+        else:
+            print(f"{get_timestamp()} No GPU detected. Looking for images first, then videos...")
+            # Try images first
+            result = self._find_next_file_in_directory("Images")
+            if result[0] is not None:
+                return result
+            # Fall back to videos if only videos left
+            print(f"{get_timestamp()} No images available, checking for videos...")
+            result = self._find_next_file_in_directory("Videos")
+            return result
+    
+    def _find_next_unprocessed_file_in_directory(self, media_type):
+        """Efficiently find the next completely unprocessed file in a specific media type directory"""
+        search_prefix = f"{self.uncloaked_prefix}{media_type}/"
+        
+        try:
+            # Use paginator to efficiently scan through files
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            page_iterator = paginator.paginate(
+                Bucket=self.bucket_name,
+                Prefix=search_prefix
+            )
             
-            if not missing_levels:
-                continue  # All levels already processed
+            for page in page_iterator:
+                if 'Contents' not in page:
+                    continue
+                    
+                for obj in page['Contents']:
+                    file_key = obj['Key']
+                    
+                    # Skip directories (keys ending with '/')
+                    if file_key.endswith('/'):
+                        continue
+                    
+                    # Check if file has supported extension
+                    ext = os.path.splitext(file_key)[1].lower()
+                    expected_formats = self.SUPPORTED_VIDEO_FORMATS if media_type == "Videos" else self.SUPPORTED_IMAGE_FORMATS
+                    
+                    if ext not in expected_formats:
+                        continue
+                    
+                    # Quick check: is this file failed?
+                    if self._is_file_failed(file_key):
+                        continue
+                    
+                    # Check if completely unprocessed
+                    if self._is_already_processed(file_key):
+                        continue
+                    
+                    # Try to create a lock for this file
+                    file_name = os.path.basename(file_key)
+                    lock_key = self.create_lock(file_name)
+                    if lock_key:
+                        print(f"{get_timestamp()} Selected {media_type.lower()[:-1]}: {file_key}")
+                        return file_key, lock_key
+                    
+                    # If we can't lock this file, continue to the next one
+                    continue
+        
+        except Exception as e:
+            print(f"Error searching {media_type} directory: {e}")
+        
+        return None, None
 
-            if self._is_file_failed(file_key):
-                print(f"Skipping failed file: {file_key}")
-                continue
-
-            # Try to create a lock for this file
-            lock_key = self.create_lock(file_name)
-            if lock_key:
-                return file_key, lock_key, missing_levels
+    def _find_next_file_in_directory(self, media_type):
+        """Efficiently find the next file to process in a specific media type directory (Images or Videos)"""
+        search_prefix = f"{self.uncloaked_prefix}{media_type}/"
+        
+        try:
+            # Use paginator to efficiently scan through files
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            page_iterator = paginator.paginate(
+                Bucket=self.bucket_name,
+                Prefix=search_prefix
+            )
+            
+            for page in page_iterator:
+                if 'Contents' not in page:
+                    continue
+                    
+                for obj in page['Contents']:
+                    file_key = obj['Key']
+                    
+                    # Skip directories (keys ending with '/')
+                    if file_key.endswith('/'):
+                        continue
+                    
+                    # Check if file has supported extension
+                    ext = os.path.splitext(file_key)[1].lower()
+                    expected_formats = self.SUPPORTED_VIDEO_FORMATS if media_type == "Videos" else self.SUPPORTED_IMAGE_FORMATS
+                    
+                    if ext not in expected_formats:
+                        continue
+                    
+                    # Quick check: is this file failed?
+                    if self._is_file_failed(file_key):
+                        continue
+                    
+                    # Check for missing cloak levels
+                    missing_levels = self._get_missing_cloak_levels(file_key)
+                    if not missing_levels:
+                        continue  # Already fully processed
+                    
+                    # Try to create a lock for this file
+                    file_name = os.path.basename(file_key)
+                    lock_key = self.create_lock(file_name)
+                    if lock_key:
+                        print(f"{get_timestamp()} Selected {media_type.lower()[:-1]}: {file_key} (missing levels: {missing_levels})")
+                        return file_key, lock_key, missing_levels
+                    
+                    # If we can't lock this file, continue to the next one
+                    continue
+        
+        except Exception as e:
+            print(f"Error searching {media_type} directory: {e}")
         
         return None, None, []
-    
+
     def _get_missing_cloak_levels(self, uncloaked_file_key):
         """Check which cloak levels are missing for a file"""
         file_name = os.path.basename(uncloaked_file_key)

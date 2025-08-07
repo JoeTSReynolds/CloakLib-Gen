@@ -37,7 +37,7 @@ export PATH="/opt/miniconda/bin:$PATH"
 
 # 5. Create environment and install Python packages
 /opt/miniconda/bin/conda create -y -n py38 python=3.8
-/opt/miniconda/bin/conda run -n py38 pip install mtcnn==0.1.1 fawkes tqdm opencv-python boto3 awscli
+/opt/miniconda/bin/conda run -n py38 pip install mtcnn==0.1.1 fawkes tqdm opencv-python boto3 awscli torch
 
 # 6. Clone repo
 cd /root
