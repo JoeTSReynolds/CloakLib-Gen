@@ -17,7 +17,8 @@ import tempfile
 import base64
 from pathlib import Path
 from dotenv import load_dotenv
-
+from fawkes.protection import Fawkes
+import base64
 # Load environment variables from .env file
 load_dotenv()
 
@@ -30,8 +31,8 @@ app = Flask(__name__)
 CORS(app)
 
 # Configuration from environment variables
-BUCKET_NAME = os.getenv('AWS_BUCKET_NAME', 'cloakingbucketdoubleday')
-PROFILE_NAME = os.getenv('AWS_PROFILE_NAME', 'joe')
+BUCKET_NAME = os.getenv('AWS_BUCKET_NAME', 'cloakingbucket')
+PROFILE_NAME = os.getenv('AWS_PROFILE_NAME', 'sajida_config')
 REGION = os.getenv('AWS_REGION', 'eu-west-2')
 COLLECTION_ID = os.getenv('COLLECTION_ID', 'my-face-collection')
 
@@ -46,6 +47,7 @@ except Exception as e:
 def upload_to_s3(image_bytes, filename):
     """Upload image bytes to S3 bucket"""
     try:
+        print(f"Uploading {filename} to bucket {BUCKET_NAME} with {PROFILE_NAME} in {REGION}")
         session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION)
         s3_client = session.client('s3')
         s3_client.put_object(
@@ -69,6 +71,27 @@ def cleanup_s3_file(filename):
     except Exception as e:
         print(f"Error cleaning up S3 file {filename}: {e}")
 
+def cloak_image(filename, selectedMode):
+    try:
+        fawkes_protector = Fawkes(
+            feature_extractor="arcface_extractor_0",
+            gpu="0",  # Use GPU 0, change as needed
+            batch_size=5,
+            mode=selectedMode
+        )
+        fawkes_protector.run_protection(
+            [filename],
+            batch_size=1,
+            format='png',
+            separate_target=True,
+            debug=False,
+            no_align=False
+        )
+        return f"{os.path.splitext(filename)[0]}_cloaked.png"
+    except Exception as e:
+        print(f"Error cloaking image {filename}: {e}")
+
+
 @app.route('/api/enroll-face', methods=['POST'])
 def enroll_face():
     print("Received request to enroll face")
@@ -77,7 +100,7 @@ def enroll_face():
         data = request.json
         image_data = data.get('imageData')  # Base64 encoded image
         person_name = data.get('personName').replace(' ', '_')  # Normalize name for S3 filename
-        
+        selected_mode = data.get('selectedMode') #cloaking mode from frontend
         if not image_data or not person_name:
             return jsonify({
                 'success': False,
@@ -121,7 +144,14 @@ def enroll_face():
         
         # Generate S3 filename
         s3_filename = f"{person_name}_{int(time.time())}.jpg"
-        
+        with open(s3_filename, 'wb') as f:
+            f.write(image_bytes)
+
+        if selected_mode == 'high' or 'mid' or 'low':
+            s3_filename = cloak_image(s3_filename, selected_mode)
+            with open(s3_filename, "rb") as f:
+                image_bytes = f.read()
+
         # Upload to S3
         if not upload_to_s3(image_bytes, s3_filename):
             return jsonify({
@@ -154,6 +184,7 @@ def enroll_face():
         # Clean up temporary S3 file after enrollment
         if s3_filename:
             cleanup_s3_file(s3_filename)
+
 
 @app.route('/api/enrolled-people', methods=['GET'])
 def get_enrolled_people():
@@ -284,4 +315,4 @@ if __name__ == '__main__':
     print(f"  Collection: {COLLECTION_ID}")
     print(f"  Rekognition available: {face_system is not None}")
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
