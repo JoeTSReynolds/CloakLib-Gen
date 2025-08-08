@@ -36,7 +36,7 @@ const FaceRecognitionScreen: React.FC = () => {
   const [enrolledPeople, setEnrolledPeople] = useState<EnrolledPerson[]>([]);
   const [showEnrolledModal, setShowEnrolledModal] = useState<boolean>(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [selectedLabel, setSelectedLabel] = useState(null);
+  const [selectedMode, setSelectedMode] = useState<string>('');
   const [dropdownItems, setDropdownItems] = useState([
     { label: 'No Cloaking', value: 'no cloaking' },
     { label: 'Low Cloaking', value: 'low' },
@@ -88,6 +88,7 @@ const [fontsLoaded] = useFonts({
       }
     }
   };
+  
 
   const enrollFace = async () => {
     Alert.alert('Enrolling face', `Image: ${enrollmentImage}, Name: ${personName}`);
@@ -104,7 +105,8 @@ const [fontsLoaded] = useFonts({
       // Use real AWS backend implementation
       const result: EnrollmentResult = await faceRecognitionService.enrollFace(
         enrollmentImage,
-        personName.trim()
+        personName.trim(),
+        selectedMode
       );
 
       if (result.success) {
@@ -127,6 +129,34 @@ const [fontsLoaded] = useFonts({
       Alert.alert('Error', 'An unexpected error occurred');
     } finally {
       setIsEnrolling(false);
+    }
+  };
+
+    // Example API call functions
+  const callNoCloakingAPI = async () => {
+    console.log('Selected No Cloaking...');
+  };
+
+
+  const callMidCloakingAPI = async () => {
+    console.log('Calling Medium Cloaking API...');
+    await fetch('/api/mid-cloaking');
+  };
+
+  // Function that chooses which API to call
+  const handleSelection = (value: string) => {
+    switch (value) {
+      case 'no cloaking':
+        break;
+      case 'low':
+        break;
+      case 'mid':
+        callMidCloakingAPI();
+        break;
+      case 'high':
+        break;
+      default:
+        console.warn('Unknown cloaking type selected:', value);
     }
   };
 
@@ -310,10 +340,10 @@ const [fontsLoaded] = useFonts({
 
               <DropDownPicker style={styles.textInput}
                 open={dropdownOpen}
-                value={selectedLabel}
+                value={selectedMode}
                 items={dropdownItems}
                 setOpen={setDropdownOpen}
-                setValue={setSelectedLabel}
+                setValue={setSelectedMode}
                 setItems={setDropdownItems}
                 placeholder="Select Cloaking Level"
                 dropDownContainerStyle={{ borderColor: '#ccc' }}
