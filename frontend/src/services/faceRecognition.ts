@@ -30,11 +30,12 @@ export interface RecognitionResult {
   message?: string;
 }
 
+
 class FaceRecognitionService {
   private backendUrl: string;
 
   constructor() {
-    this.backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:5000';
+    this.backendUrl = 'http://localhost:5001';// process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8081';
   }
 
   private async imageUriToBase64(imageUri: string): Promise<string> {
@@ -62,7 +63,7 @@ class FaceRecognitionService {
     }
   }
 
-  async enrollFace(imageUri: string, personName: string): Promise<EnrollmentResult> {
+  async enrollFace(imageUri: string, personName: string, selectedMode: string): Promise<EnrollmentResult> {
     try {
       const imageData = await this.imageUriToBase64(imageUri);
       
@@ -73,6 +74,7 @@ class FaceRecognitionService {
         },
         body: JSON.stringify({
           imageData,
+          selectedMode,
           personName,
         }),
       });
