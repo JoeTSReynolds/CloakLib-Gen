@@ -61,7 +61,7 @@ def is_video_supported(file_path):
     file_ext = os.path.splitext(file_path)[1].lower()
     return file_ext in cloaking_library_instance.SUPPORTED_VIDEO_FORMATS
 
-def process_image_batch(image_paths, fawkes_protector, batch_id=0, classifications=[], name=""):
+def process_image_batch(image_paths, fawkes_protector, batch_id=0, classifications=[], name="", same_dir=False):
     """Process a batch of images with Fawkes"""
     try:
         # Create temporary directory for this batch
@@ -89,10 +89,13 @@ def process_image_batch(image_paths, fawkes_protector, batch_id=0, classificatio
         
         success_count = 0
         # Copy results to appropriate directories
-        for i, image_path in enumerate(image_paths):
-            print(f"{get_timestamp()} Adding to library:", image_path)
-            if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, name, classifications): #TODO: Is this correct imagepath?
-                success_count += 1
+        if not same_dir:
+            for i, image_path in enumerate(image_paths):
+                print(f"{get_timestamp()} Adding to library:", image_path)
+                if cloaking_library_instance.add_to_library(image_path, image_path, fawkes_protector.mode, name, classifications): #TODO: Is this correct imagepath?
+                    success_count += 1
+        else:
+            success_count += 1
 
         shutil.rmtree(temp_dir)
         return success_count
@@ -101,9 +104,9 @@ def process_image_batch(image_paths, fawkes_protector, batch_id=0, classificatio
         print(f"{get_timestamp()} Error processing batch {batch_id}: {str(e)}")
         return 0
 
-def process_image(image_path, fawkes_protector, classifications=[], name=""):
+def process_image(image_path, fawkes_protector, classifications=[], name="", same_dir=False):
     """Process a single image with Fawkes"""
-    return process_image_batch([image_path], fawkes_protector, 0, classifications, name)
+    return process_image_batch([image_path], fawkes_protector, 0, classifications, name, same_dir)
 
 def extract_frames(video_path, output_dir):
     """Extract frames from a video file"""
@@ -272,7 +275,7 @@ def process_video(video_path, fawkes_protector, batch_size=10, num_threads=1, cl
         print(f"{get_timestamp()} Error processing video {filename}: {str(e)}")
         return False
 
-def process_single_image(image_path, fawkes_protector, classifications=[], name=""):
+def process_single_image(image_path, fawkes_protector, classifications=[], name="", same_dir=False):
     """Process a single image file"""
     
     # Check if image needs conversion
@@ -290,7 +293,7 @@ def process_single_image(image_path, fawkes_protector, classifications=[], name=
         print(f"{get_timestamp()} Unsupported image format: {image_path}")
         return False
 
-    success = process_image(image_path, fawkes_protector, classifications, name)
+    success = process_image(image_path, fawkes_protector, classifications, name, same_dir)
 
     # Clean up converted file if it was created
     if converted_path and os.path.exists(converted_path):
