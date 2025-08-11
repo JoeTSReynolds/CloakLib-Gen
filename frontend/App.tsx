@@ -3,7 +3,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { Image } from 'react-native';
+import { Image, View } from 'react-native';
 import FaceRecognitionScreen from './src/screens/FaceRecognitionScreen';
 
 const Stack = createNativeStackNavigator();
@@ -19,18 +19,24 @@ export default function App() {
             options={{
               title: '',
               headerShadowVisible: false,
-              headerLeft: () => (
-                <Image
-                  source={require('./assets/logo.png')}
-                  style={{
-                    width: 110,
-                    height: 110,
-                    marginLeft: '20%',
-                    marginTop: '40%',
-                    resizeMode: 'contain',
-                  }}
-                  resizeMode="contain"
-                />
+              header: () => (
+                <View style={{
+                  height: 100,
+                  backgroundColor: '#ffffff',
+                  justifyContent: 'center',
+                  alignItems: 'flex-start',
+                  paddingLeft: 20,
+                }}>
+                  <Image
+                    source={require('./assets/logo.png')}
+                    style={{
+                      width: 110,
+                      height: 110,
+                      resizeMode: 'contain',
+                    }}
+                    resizeMode="contain"
+                  />
+                </View>
               ),
             }}
           />
