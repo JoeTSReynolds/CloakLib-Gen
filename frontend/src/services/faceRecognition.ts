@@ -96,7 +96,7 @@ class FaceRecognitionService {
     }
   }
 
-  async recognizeFace(imageUri: string, threshold: number = 80.0): Promise<RecognitionResult> {
+  async recognizeFace(imageUri: string, threshold: number = 80.0, method: 'rekognition' | 'human' = 'rekognition'): Promise<RecognitionResult> {
     try {
       const imageData = await this.imageUriToBase64(imageUri);
       
@@ -108,6 +108,7 @@ class FaceRecognitionService {
         body: JSON.stringify({
           imageData,
           threshold,
+          facial_recognition_method: method,
         }),
       });
 

@@ -1,0 +1,19 @@
+{
+  "name": "human",
+  "version": "1.0.0",
+  "description": "",
+  "main": "human.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@tensorflow/tfjs-node": "^4.22.0",
+    "@vladmandic/human": "^3.3.5",
+    "express": "^5.1.0",
+    "multer": "^2.0.2"
+  }
+}

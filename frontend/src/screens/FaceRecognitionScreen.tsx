@@ -43,6 +43,13 @@ const FaceRecognitionScreen: React.FC = () => {
     { label: 'Medium Cloaking', value: 'mid' },
     { label: 'High Cloaking', value: 'high' }
   ]);
+  // recognition method dropdown
+  const [methodDropdownOpen, setMethodDropdownOpen] = useState(false);
+  const [recognitionMethod, setRecognitionMethod] = useState<'rekognition' | 'human'>('rekognition');
+  const [methodItems, setMethodItems] = useState([
+    { label: 'AWS Rekognition', value: 'rekognition' },
+    { label: 'Human (local)', value: 'human' }
+  ]);
 
 const [fontsLoaded] = useFonts({
   Inter_400Regular,
@@ -173,7 +180,8 @@ const [fontsLoaded] = useFonts({
       // Use real AWS backend implementation
       const result: RecognitionResult = await faceRecognitionService.recognizeFace(
         recognitionImage,
-        parseFloat(threshold)
+        parseFloat(threshold),
+        recognitionMethod
       );
 
       if (result.success) {
@@ -416,6 +424,19 @@ const [fontsLoaded] = useFonts({
                   placeholderTextColor="#9CA3AF"
                 />
               </View>
+
+              {/* Recognition Method Dropdown */}
+              <DropDownPicker
+                style={styles.textInput}
+                open={methodDropdownOpen}
+                value={recognitionMethod}
+                items={methodItems}
+                setOpen={setMethodDropdownOpen}
+                setValue={setRecognitionMethod}
+                setItems={setMethodItems}
+                placeholder="Select Recognition Method"
+                dropDownContainerStyle={{ borderColor: '#ccc' }}
+              />
 
               <TouchableOpacity
                 onPress={recognizeFace}

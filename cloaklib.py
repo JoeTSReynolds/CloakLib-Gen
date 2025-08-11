@@ -96,12 +96,15 @@ class CloakingLibrary:
             cls._instance = super(CloakingLibrary, cls).__new__(cls)
         return cls._instance
     
-    def __init__(self):
+    def __init__(self, make_dirs = False):
         if not hasattr(self, '_initialized'):
             self._initialized = True
             
             base_dir = os.path.dirname(os.path.abspath(__file__))
 
+            if not make_dirs:
+                return
+            
             self.cloaking_lib_dir = os.path.join(base_dir, "CloakingLibrary")
             os.makedirs(self.cloaking_lib_dir, exist_ok=True)
             self.info_json_path = os.path.join(self.cloaking_lib_dir, "dataset_info.json")
