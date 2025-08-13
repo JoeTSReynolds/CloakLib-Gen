@@ -1,18 +1,17 @@
 import boto3
 import json
 import os
-import time
 import signal
 import sys
 import threading
 import glob
-import shutil
 from urllib.request import urlopen
 from urllib.error import URLError
 import urllib
 from datetime import datetime, timezone
 from tqdm import tqdm
 import cv2
+import re
 from cloaklib import CloakingLibrary
 
 def get_timestamp():
@@ -132,6 +131,269 @@ class AWSS3Handler:
 
         # Dataset requirements from CloakingLibrary
         self.dataset_requirements = CloakingLibrary.DATASET_REQUIREMENTS
+
+        # ---------------- Local processed tracker (added) ----------------
+        # Tracks which originals have which cloak levels already processed
+        # to avoid repeated S3 HEAD checks across loop iterations.
+        self._tracker_path = os.getenv('PROCESSED_TRACKER_PATH', '.processed_tracker.json')
+        self._processed_tracker = self._load_processed_tracker()
+        # Track all currently held (pre-acquired) lock object keys so we can
+        # release them on interrupt before shutting down.
+        self.pending_locks = set()
+        # Perform one-time optional sync of local tracker (can be deferred to caller)
+
+    # ---------------- Sync Existing Processed State ----------------
+    def sync_local_tracker(self, force=False):
+        """Populate local processed tracker by listing S3 once.
+        Strategy (LIST-only, no HEAD):
+          1. List all originals under uncloaked_prefix to build a mapping of (dir, base_name) -> (original_key, media_type)
+          2. List all cloaked objects; parse filename pattern '<base>_cloaked_<level>.(png|mp4)'; map back to original using dir+base.
+             For videos: only 'mid' counts toward completion per current policy.
+        This runs once at startup unless force=True or tracker empty.
+        """
+        if self._processed_tracker['files'] and not force:
+            return  # Already populated
+        print("Syncing local processed tracker from S3...")
+        mapping = {}  # (relative_dir, base_name) -> (original_key, media_type)
+        paginator = self.s3_client.get_paginator('list_objects_v2')
+        # Pass 1: originals
+        try:
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=self.uncloaked_prefix):
+                if 'Contents' not in page:
+                    continue
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    if key.endswith('/'):
+                        continue
+                    rel_path = key[len(self.uncloaked_prefix):]
+                    rel_dir = os.path.dirname(rel_path)
+                    fname = os.path.basename(key)
+                    base, ext = os.path.splitext(fname)
+                    ext_l = ext.lower()
+                    if ext_l in self.SUPPORTED_IMAGE_FORMATS:
+                        media_type = 'image'
+                    elif ext_l in self.SUPPORTED_VIDEO_FORMATS:
+                        media_type = 'video'
+                    else:
+                        continue
+                    mapping[(rel_dir, base)] = (key, media_type)
+        except Exception as e:
+            print(f"Error listing originals for sync: {e}")
+        # Pass 2: cloaked
+        cloaked_pattern = re.compile(r"^(?P<base>.+)_cloaked_(?P<level>low|mid|high)\.(png|mp4)$", re.IGNORECASE)
+        counts = { 'image': 0, 'video': 0 }
+        try:
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=self.cloaked_prefix):
+                if 'Contents' not in page:
+                    continue
+                for obj in page['Contents']:
+                    ckey = obj['Key']
+                    if ckey.endswith('/'):
+                        continue
+                    rel_path = ckey[len(self.cloaked_prefix):]
+                    rel_dir = os.path.dirname(rel_path)
+                    fname = os.path.basename(ckey)
+                    m = cloaked_pattern.match(fname)
+                    if not m:
+                        continue
+                    base = m.group('base')
+                    level = m.group('level').lower()
+                    map_entry = mapping.get((rel_dir, base))
+                    if not map_entry:
+                        continue  # Could be orphan or naming mismatch
+                    original_key, media_type = map_entry
+                    # For videos only record 'mid'; ignore others per policy
+                    if media_type == 'video' and level != 'mid':
+                        continue
+                    self.mark_level_processed_local(original_key, level, media_type)
+                    counts[media_type] += 1
+        except Exception as e:
+            print(f"Error listing cloaked for sync: {e}")
+        # Finalize full-done flags for images
+        for key, entry in self._processed_tracker['files'].items():
+            if 'all_done' not in entry:
+                if set(entry.get('processed_levels', [])) >= {'low','mid','high'}:
+                    entry['all_done'] = True
+                elif 'mid' in entry.get('processed_levels', []) and any(key.lower().endswith(ext) for ext in self.SUPPORTED_VIDEO_FORMATS):
+                    entry['all_done'] = True
+        self._save_processed_tracker()
+        print(f"Sync complete. Tracker entries: {len(self._processed_tracker['files'])} (image levels recorded: {counts['image']}, video mids recorded: {counts['video']})")
+
+    # ===================== Tracker Helpers =====================
+    def _load_processed_tracker(self):
+        try:
+            if os.path.exists(self._tracker_path):
+                with open(self._tracker_path, 'r') as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and 'files' in data:
+                    return data
+        except Exception as e:
+            print(f"Warning: could not load processed tracker: {e}")
+        return {'files': {}}  # schema: { files: { key: { processed_levels: [...], all_done: bool } } }
+
+    def _save_processed_tracker(self):
+        try:
+            with open(self._tracker_path, 'w') as f:
+                json.dump(self._processed_tracker, f, indent=2)
+        except Exception as e:
+            print(f"Warning: could not save processed tracker: {e}")
+
+    def _get_tracker_entry(self, file_key):
+        return self._processed_tracker['files'].setdefault(file_key, {'processed_levels': [], 'all_done': False})
+
+    def mark_level_processed_local(self, file_key, level, media_type):
+        entry = self._get_tracker_entry(file_key)
+        if level not in entry['processed_levels']:
+            entry['processed_levels'].append(level)
+        # Images: complete when all three levels present.
+        # Videos (policy change): only 'mid' level matters; treat as complete once mid processed.
+        if media_type == 'video':
+            if 'mid' in entry['processed_levels']:
+                entry['all_done'] = True
+        else:
+            if set(entry['processed_levels']) >= {'low','mid','high'}:
+                entry['all_done'] = True
+        self._save_processed_tracker()
+
+    def mark_all_levels_processed_local(self, file_key):
+        entry = self._get_tracker_entry(file_key)
+        entry['processed_levels'] = ['low','mid','high']
+        entry['all_done'] = True
+        self._save_processed_tracker()
+
+    def already_has_level(self, file_key, level):
+        entry = self._processed_tracker['files'].get(file_key)
+        return entry and (level in entry.get('processed_levels', []))
+
+    def is_fully_processed_local(self, file_key):
+        entry = self._processed_tracker['files'].get(file_key)
+        return bool(entry and entry.get('all_done'))
+
+    # ===================== Queue / Candidate Logic =====================
+    def build_processing_queue(self, desired_count=3, target_level='mid', all_levels=False):
+        """Build a queue (list) of up to desired_count items to process.
+        Each item: { 'file_key': str, 'lock_key': str, 'media_type': 'image'|'video' }
+        We DO NOT perform HEAD checks here (per requirement). We create locks immediately.
+        Skips entries fully processed according to local tracker.
+        """
+        queue = []
+        # Iterate over Images then Videos or GPU preference? Simplicity: both prefixes via paginator
+        # We'll reuse existing listing logic scanning uncloaked prefix once until queue filled.
+        paginator = self.s3_client.get_paginator('list_objects_v2')
+        try:
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=self.uncloaked_prefix):
+                if 'Contents' not in page:
+                    continue
+                for obj in page['Contents']:
+                    if len(queue) >= desired_count:
+                        return queue
+                    key = obj['Key']
+                    if key.endswith('/'):
+                        continue
+                    ext = os.path.splitext(key)[1].lower()
+                    media_type = None
+                    if ext in self.SUPPORTED_IMAGE_FORMATS:
+                        media_type = 'image'
+                    elif ext in self.SUPPORTED_VIDEO_FORMATS:
+                        media_type = 'video'
+                    else:
+                        continue
+                    # Skip if previously marked as failed
+                    try:
+                        if self._is_file_failed(key):
+                            continue
+                    except Exception:
+                        pass
+                    if media_type == 'video':
+                        # Video policy: only process mid level ever. Skip if mid already done.
+                        if self.already_has_level(key, 'mid') or (key in self._processed_tracker['files'] and 'mid' in self._processed_tracker['files'][key]['processed_levels']):
+                            continue
+                    else:
+                        # Image logic remains: all levels when requested
+                        if all_levels and self.is_fully_processed_local(key):
+                            continue
+                        if not all_levels and self.already_has_level(key, target_level):
+                            continue
+                    # Acquire lock now
+                    lock_key = self.create_lock(os.path.basename(key))
+                    if not lock_key:
+                        continue  # some other instance locked it
+                    self.pending_locks.add(lock_key)
+                    queue.append({'file_key': key, 'lock_key': lock_key, 'media_type': media_type})
+            return queue
+        except Exception as e:
+            print(f"Error building processing queue: {e}")
+            return queue
+
+    def determine_missing_levels(self, file_key):
+        """Determine missing cloak levels using local tracker first then S3 HEAD only for unknown levels.
+        Returns list of missing levels (subset of ['low','mid','high']).
+        """
+        file_name = os.path.basename(file_key)
+        base_name, ext = os.path.splitext(file_name)
+        ext_lower = ext.lower()
+        entry = self._processed_tracker['files'].get(file_key)
+        processed_levels = set(entry['processed_levels']) if entry else set()
+        # Video: only mid counts
+        if ext_lower in self.SUPPORTED_VIDEO_FORMATS:
+            if 'mid' in processed_levels:
+                return []
+            # Need to check S3 once for mid if not locally recorded
+            cloaked_ext = '.mp4'
+            relative_path = file_key[len(self.uncloaked_prefix):]
+            relative_dir = os.path.dirname(relative_path)
+            cloaked_name = f"{base_name}_cloaked_mid{cloaked_ext}"
+            if relative_dir:
+                cloaked_key = f"{self.cloaked_prefix}{relative_dir}/{cloaked_name}"
+            else:
+                cloaked_key = f"{self.cloaked_prefix}{cloaked_name}"
+            cloaked_key = cloaked_key.replace('\\','/').replace('//','/')
+            try:
+                self.s3_client.head_object(Bucket=self.bucket_name, Key=cloaked_key)
+                self.mark_level_processed_local(file_key, 'mid', 'video')
+                return []
+            except self.s3_client.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == '404':
+                    return ['mid']
+                else:
+                    print(f"Error HEAD {cloaked_key}: {e}")
+                    return ['mid']
+            except Exception as e:
+                print(f"Error HEAD {cloaked_key}: {e}")
+                return ['mid']
+        # Image logic unchanged (all three potential levels)
+        missing = []
+        cloaked_ext = '.png' if ext_lower in self.SUPPORTED_IMAGE_FORMATS else None
+        if cloaked_ext is None:
+            return []
+        for level in ['low','mid','high']:
+            if level in processed_levels:
+                continue
+            relative_path = file_key[len(self.uncloaked_prefix):]
+            relative_dir = os.path.dirname(relative_path)
+            cloaked_name = f"{base_name}_cloaked_{level}{cloaked_ext}"
+            if relative_dir:
+                cloaked_key = f"{self.cloaked_prefix}{relative_dir}/{cloaked_name}"
+            else:
+                cloaked_key = f"{self.cloaked_prefix}{cloaked_name}"
+            cloaked_key = cloaked_key.replace('\\','/').replace('//','/')
+            try:
+                self.s3_client.head_object(Bucket=self.bucket_name, Key=cloaked_key)
+                self.mark_level_processed_local(file_key, level, 'image')
+            except self.s3_client.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == '404':
+                    missing.append(level)
+                else:
+                    print(f"Error HEAD {cloaked_key}: {e}")
+                    missing.append(level)
+            except Exception as e:
+                print(f"Error HEAD {cloaked_key}: {e}")
+                missing.append(level)
+        # If all three recorded mark complete
+        if file_key in self._processed_tracker['files'] and set(self._processed_tracker['files'][file_key]['processed_levels']) >= {'low','mid','high'}:
+            self._processed_tracker['files'][file_key]['all_done'] = True
+            self._save_processed_tracker()
+        return missing
     
     def _has_gpu_available(self):
         """Check if GPU is available for processing"""
@@ -292,10 +554,17 @@ class AWSS3Handler:
         """Release a processing lock"""
         try:
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=lock_key)
+            if lock_key in self.pending_locks:
+                self.pending_locks.discard(lock_key)
             return True
         except Exception as e:
             print(f"Error releasing lock {lock_key}: {e}")
             return False
+
+    def release_all_locks(self):
+        """Release all currently pending locks (used on interrupt)."""
+        for lk in list(self.pending_locks):
+            self.release_lock(lk)
     
     def _get_instance_id(self):
         """Get the current EC2 instance ID"""

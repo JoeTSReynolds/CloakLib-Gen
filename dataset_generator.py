@@ -414,12 +414,17 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
     
     # Initialize S3 handler
     s3_handler = AWSS3Handler(bucket_name, aws_region)
+    # One-time sync of local tracker with current S3 state (list-only)
+    s3_handler.sync_local_tracker()
     
     # Set up cleanup callback for graceful shutdown
     def cleanup_callback():
         print("Performing cleanup before shutdown...")
-        # Any extra cleanup logic can go here
-        pass
+        try:
+            # Release any pre-acquired locks we haven't processed yet
+            s3_handler.release_all_locks()
+        except Exception as e:
+            print(f"Error releasing pending locks during cleanup: {e}")
     
     # Initialize spot interrupt handler
     interrupt_handler = SpotInterruptHandler(s3_handler.s3_client, bucket_name, cleanup_callback)
@@ -438,48 +443,110 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
         print(f"Failed to initialize Fawkes: {str(e)}")
         return False
     
-    # Main processing loop
+    # New queue-based main processing loop (queue of up to 3 locked items)
     processed_count = 0
+    queue = []  # each element: {file_key, lock_key, media_type}
     while not interrupt_handler.interrupted:
-        # Get next file to process
-        if all_levels:
-            file_key, lock_key, missing_levels = s3_handler.get_next_file_to_process_all_levels()
-            if not file_key:
-                print("No more files to process. Waiting...")
-                time.sleep(30)
+        # Refill queue if empty (acquire locks up-front)
+        if not queue:
+            queue = s3_handler.build_processing_queue(desired_count=3, target_level=cloak_level, all_levels=all_levels)
+            if not queue:
+                print("No files in queue. Sleeping 45s before retry...")
+                time.sleep(45)
                 continue
-        else:
-            file_key, lock_key = s3_handler.get_next_file_to_process()
-            missing_levels = [cloak_level]
-            if not file_key:
-                print("No more files to process. Waiting...")
-                time.sleep(30)
-                continue
-        
-        print(f"\nProcessing: {file_key} with levels: {missing_levels}")
-        interrupt_handler.set_current_lock(lock_key)
-        
-        try:
-            cloak_level = missing_levels[0] if missing_levels else cloak_level
-            fawkes_protector.mode = cloak_level
-
-            # Process the file
-            success = process_aws_file(file_key, s3_handler, fawkes_protector, cloak_level, batch_size, interrupt_handler)
-            
-            if success:
-                processed_count += 1
-                print(f"Successfully processed {os.path.basename(file_key)} (Total: {processed_count})")
             else:
-                print(f"Failed to process {os.path.basename(file_key)}")
-        
+                print(f"Queue filled with {len(queue)} item(s).")
+
+        current = queue.pop(0)
+        file_key = current['file_key']
+        lock_key = current['lock_key']
+        interrupt_handler.set_current_lock(lock_key)
+
+        # Determine missing levels once per file (minimize HEAD operations)
+        file_ext = os.path.splitext(file_key)[1].lower()
+        is_video = file_ext in s3_handler.SUPPORTED_VIDEO_FORMATS
+        if is_video:
+            # Policy: only process mid for videos regardless of flags
+            target_video_level = 'mid'
+            missing_levels = [] if s3_handler.already_has_level(file_key, target_video_level) else [target_video_level]
+        else:
+            if all_levels:
+                missing_levels = s3_handler.determine_missing_levels(file_key)
+            else:
+                missing_levels = [] if s3_handler.already_has_level(file_key, cloak_level) else [cloak_level]
+
+        if not missing_levels:
+            print(f"Skipping {file_key}; no missing levels (locally tracked).")
+            s3_handler.release_lock(lock_key)
+            interrupt_handler.set_current_lock(None)
+            continue
+
+        print(f"\nProcessing {file_key} (levels: {missing_levels})")
+
+        # Download original just-in-time to save disk space
+        work_dir = "/tmp/cloaking_queue_work"
+        os.makedirs(work_dir, exist_ok=True)
+        local_name = os.path.basename(file_key)
+        local_path = os.path.join(work_dir, local_name)
+        if not s3_handler.download_file(file_key, local_path):
+            print(f"Failed to download {file_key}, releasing lock.")
+            s3_handler.release_lock(lock_key)
+            interrupt_handler.set_current_lock(None)
+            continue
+
+        ext = os.path.splitext(local_name)[1].lower()
+        media_type = 'image' if ext in s3_handler.SUPPORTED_IMAGE_FORMATS else 'video'
+
+        try:
+            for level in missing_levels:
+                if interrupt_handler.interrupted:
+                    break
+                # Adjust Fawkes mode for this level (re-init if needed)
+                # Force protector mode to requested level (videos forced to mid already)
+                if getattr(fawkes_protector, 'mode', None) != level:
+                    try:
+                        fawkes_protector.mode = level
+                    except Exception:
+                        # Fallback: reinitialize protector
+                        from fawkes.protection import Fawkes
+                        fawkes_protector = Fawkes(
+                            feature_extractor="arcface_extractor_0",
+                            gpu="0",
+                            batch_size=batch_size,
+                            mode=level
+                        )
+                print(f"  - Level {level} starting for {file_key}")
+                if media_type == 'image':
+                    ok = process_aws_image(local_path, file_key, s3_handler, fawkes_protector, level)
+                else:
+                    ok = process_aws_video(local_path, file_key, s3_handler, fawkes_protector, level, batch_size, interrupt_handler)
+                if ok:
+                    s3_handler.mark_level_processed_local(file_key, level, media_type)
+                    print(f"  - Level {level} completed")
+                else:
+                    print(f"  - Level {level} failed; stopping further levels for this file")
+                    # Mark file as failed in S3 so other instances skip it
+                    s3_handler.mark_file_as_failed(file_key, f"Processing failed at level {level}")
+                    break
+            if s3_handler.is_fully_processed_local(file_key):
+                processed_count += 1
+                print(f"File fully processed: {file_key} (Total fully processed: {processed_count})")
         except Exception as e:
             print(f"Error processing {file_key}: {e}")
-        
         finally:
-            # Always release the lock
+            # Release lock only after all intended levels
             if lock_key:
                 s3_handler.release_lock(lock_key)
                 interrupt_handler.set_current_lock(None)
+            # Cleanup local file to conserve disk
+            try:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                # Remove work dir if empty
+                if os.path.isdir(work_dir) and not os.listdir(work_dir):
+                    os.rmdir(work_dir)
+            except Exception:
+                pass
     
     print(f"Spot instance processing completed. Total files processed: {processed_count}")
     return True
