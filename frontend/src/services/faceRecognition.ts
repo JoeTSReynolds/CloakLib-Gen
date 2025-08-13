@@ -1,8 +1,8 @@
 export interface FaceMatch {
   faceId: string;
   externalImageId: string;
-  similarity: number;
-  confidence: number;
+  similarity: number; // percentage (0-100)
+  confidence: number | null; // Rekognition provides confidence; human backend sets null
 }
 
 export interface EnrollmentResult {
@@ -14,7 +14,7 @@ export interface EnrollmentResult {
 
 export interface EnrolledPerson {
   name: string;
-  imageUri: string;
+  imageUri: string | null;
   enrolledAt: Date | null;
 }
 
@@ -126,17 +126,6 @@ class FaceRecognitionService {
         matches: [],
         message: 'Failed to recognize face. Please try again.',
       };
-    }
-  }
-
-  async checkHealth(): Promise<boolean> {
-    try {
-      const response = await fetch(`${this.backendUrl}/api/health`);
-      const result = await response.json();
-      return response.ok && result.rekognition_available;
-    } catch (error) {
-      console.error('Health check failed:', error);
-      return false;
     }
   }
 

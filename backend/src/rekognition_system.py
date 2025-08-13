@@ -93,8 +93,8 @@ class FaceRecognitionSystem:
             print(f"\nSearching for faces in {photo}...")
             print(f"Found {len(response['FaceMatches'])} matches:")
             
-            for match in response['FaceMatches']:
-                face = match['Face']
+            #for match in response['FaceMatches']:
+            #    face = match['Face']
                 #print(f"  Match found:")
                 #print(f"    Person: {face['ExternalImageId']}")
                 #print(f"    Face ID: {face['FaceId']}")
@@ -121,11 +121,11 @@ class FaceRecognitionSystem:
             for face in faces:
                 grouped_faces[face['ExternalImageId']].append(face)
 
-            for external_id, face_list in grouped_faces.items():
-                print(f"\nPerson: {external_id} ({len(face_list)} face(s))")
-                for face in face_list:
-                    print(f"  Face ID: {face['FaceId']}")
-                    print(f"  Confidence: {face['Confidence']:.2f}%")
+            # for external_id, face_list in grouped_faces.items():
+            #     print(f"\nPerson: {external_id} ({len(face_list)} face(s))")
+            #     for face in face_list:
+            #         print(f"  Face ID: {face['FaceId']}")
+            #         print(f"  Confidence: {face['Confidence']:.2f}%")
 
             return faces
 

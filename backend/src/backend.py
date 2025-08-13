@@ -21,6 +21,8 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import requests
 import boto3
+import json
+import threading
 
 load_dotenv()
 
@@ -266,7 +268,24 @@ def recognize_face():
         elif method == 'human':
             try:
                 r = requests.post(f"{HUMAN_SERVER_URL}/match", json={"path": str(probe_path), "topk": 5}, timeout=30)
-                return jsonify(r.json())
+                raw = r.json()
+                human_matches = raw.get('matches', []) if isinstance(raw, dict) else []
+                normalized = []
+                for m in human_matches:
+                    # human similarity likely 0..1; convert to percentage if so
+                    sim = m.get('similarity')
+                    if isinstance(sim, (int, float)) and sim <= 1.0:
+                        sim_pct = sim * 100.0
+                    else:
+                        sim_pct = sim
+                    normalized.append({
+                        'faceId': m.get('filename'),
+                        'externalImageId': m.get('name'),
+                        'similarity': sim_pct,
+                        'confidence': None
+                    })
+                print(normalized)
+                return jsonify(success=True, method='human', matches=normalized)
             except Exception as e:
                 print("[PY] Human match request failed:", e)
                 return jsonify(success=False, message='Human match failed'), 500
@@ -284,6 +303,167 @@ def recognize_face():
                 probe_path.unlink()
         except Exception:
             pass
+
+_HUMAN_DB_SYNCED = False
+_SYNC_LOCK = threading.Lock()
+
+def _download_images_from_s3_if_needed():
+    """Download only the images that belong to the Rekognition collection from S3 into IMAGES_DIR.
+    Strategy:
+      - List faces in the collection -> get unique ExternalImageId values (person keys)
+      - For each person key P, list S3 objects with Prefix=f"{P}_" (the naming pattern used at enrollment)
+      - Download any that are missing locally
+    Runs only once per process lifetime to avoid repeated S3 calls.
+    Returns True if a sync (any S3 listing) happened this call, False otherwise.
+    """
+    global _HUMAN_DB_SYNCED
+    if _HUMAN_DB_SYNCED:
+        return False
+    with _SYNC_LOCK:
+        if _HUMAN_DB_SYNCED:
+            return False
+        print('[PY] Performing one-time targeted S3 -> local image sync (collection members only)...')
+        try:
+            session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION)
+            s3 = session.client('s3')
+            # Gather person keys from Rekognition collection
+            person_keys = set()
+            if face_system:
+                try:
+                    faces = face_system.list_faces_in_collection(COLLECTION_ID) or []
+                    for face in faces:
+                        pk = face.get('ExternalImageId')
+                        if pk:
+                            person_keys.add(pk)
+                except Exception as e:
+                    print('[PY] Rekognition list during sync failed:', e)
+
+            if not person_keys:
+                print('[PY] No faces found in collection; skipping S3 download phase.')
+                _HUMAN_DB_SYNCED = True
+                return True
+
+            count_downloaded = 0
+            for pk in sorted(person_keys):
+                prefix = f"{pk}_"
+                continuation_token = None
+                while True:
+                    kwargs = {'Bucket': BUCKET_NAME, 'Prefix': prefix, 'MaxKeys': 1000}
+                    if continuation_token:
+                        kwargs['ContinuationToken'] = continuation_token
+                    resp = s3.list_objects_v2(**kwargs)
+                    for obj in resp.get('Contents', []):
+                        key = obj['Key']
+                        if key.endswith('/'):
+                            continue
+                        local_path = IMAGES_DIR / key
+                        if not local_path.exists():
+                            try:
+                                s3.download_file(BUCKET_NAME, key, str(local_path))
+                                count_downloaded += 1
+                            except Exception as e:
+                                print(f'[PY] Failed downloading {key}:', e)
+                    if resp.get('IsTruncated'):
+                        continuation_token = resp.get('NextContinuationToken')
+                    else:
+                        break
+            print(f'[PY] Targeted S3 sync complete. Downloaded {count_downloaded} new objects across {len(person_keys)} person prefixes.')
+            _HUMAN_DB_SYNCED = True
+            # After syncing images, tell Human server to rebuild DB
+            try:
+                r = requests.post(f"{HUMAN_SERVER_URL}/sync-db", json={"imagesDir": str(IMAGES_DIR)}, timeout=60)
+                print('[PY] Post-sync Human /sync-db response:', r.status_code)
+            except Exception as e:
+                print('[PY] Post-sync Human sync-db failed:', e)
+            return True
+        except Exception as e:
+            print('[PY] S3 sync error:', e)
+            return False
+
+def _collect_people_with_images():
+    """Aggregate people data from Human DB and Rekognition (names) and attach base64 image data.
+    Preference order for selecting an image: first listed Human image, otherwise first local file matching name_*."""
+    people = {}
+    # Human DB
+    try:
+        db_path = (HUMAN_DIR / 'faces-db.json').resolve()
+        if db_path.exists():
+            with open(db_path, 'r') as f:
+                db = json.load(f)
+            for name, entry in (db.get('people') or {}).items():
+                images = entry.get('images') or []
+                enrolled_at = entry.get('enrolledAt')
+                img_path = None
+                for cand in images:
+                    p = Path(cand)
+                    if p.exists():
+                        img_path = p
+                        break
+                people.setdefault(name, { 'name': name, 'imagePath': str(img_path) if img_path else None, 'enrolledAt': enrolled_at })
+    except Exception as e:
+        print('[PY] enrolled_people: failed reading human DB:', e)
+
+    # Rekognition list (names only if missing)
+    if face_system:
+        try:
+            faces = face_system.list_faces_in_collection(COLLECTION_ID) or []
+            for face in faces:
+                name = face.get('ExternalImageId') or 'Unknown'
+                people.setdefault(name, { 'name': name, 'imagePath': None, 'enrolledAt': None })
+        except Exception as e:
+            print('[PY] enrolled_people: rekognition list error:', e)
+
+    # For any person without imagePath, try to find a local file by prefix
+    for pdata in people.values():
+        if not pdata.get('imagePath'):
+            prefix = pdata['name'] + '_'
+            matches = sorted([p for p in IMAGES_DIR.glob(prefix + '*') if p.is_file()], reverse=True)
+            if matches:
+                pdata['imagePath'] = str(matches[0])
+
+    # Convert to API shape with base64 imageUri
+    api_people = []
+    for pdata in people.values():
+        image_uri = None
+        ipath = pdata.get('imagePath')
+        if ipath and os.path.exists(ipath):
+            try:
+                with open(ipath, 'rb') as f:
+                    b = f.read()
+                b64 = base64.b64encode(b).decode('utf-8')
+                # assume jpeg if extension .jpg/.jpeg else png
+                ext = os.path.splitext(ipath)[1].lower()
+                mime = 'image/png' if ext == '.png' else 'image/jpeg'
+                image_uri = f'data:{mime};base64,{b64}'
+            except Exception as e:
+                print('[PY] Failed reading image for person', pdata['name'], e)
+        api_people.append({
+            'name': pdata['name'],
+            'imageUri': image_uri,
+            'enrolledAt': pdata.get('enrolledAt')
+        })
+
+    return sorted(api_people, key=lambda x: x['name'].lower())
+
+@app.route('/api/enrolled-people', methods=['GET'])
+def enrolled_people():
+    """On first call (per process) ensure local images are synced from S3 then sync the Human DB.
+    Subsequent calls skip S3 download (only refreshing Human DB) for efficiency.
+    Response: { success, enrolledPeople: [ { name, imageUri (data URI), enrolledAt } ] }
+    """
+    # First-time broad sync (no-op if already done)
+    did_sync = _download_images_from_s3_if_needed()
+    if not did_sync:
+        # refresh Human DB quickly (without S3) so newly added local images are indexed
+        try:
+            r = requests.post(f"{HUMAN_SERVER_URL}/sync-db", json={"imagesDir": str(IMAGES_DIR)}, timeout=30)
+            if r.status_code != 200:
+                print('[PY] Human quick sync-db non-200:', r.status_code)
+        except Exception as e:
+            print('[PY] Human quick sync-db failed:', e)
+
+    enrolled_list = _collect_people_with_images()
+    return jsonify(success=True, enrolledPeople=enrolled_list, performedInitialSync=did_sync)
 
 if __name__ == '__main__':
     print("[PY] Starting Flask backend (wsgiref server)...")

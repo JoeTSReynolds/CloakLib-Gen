@@ -64,11 +64,10 @@ const [fontsLoaded] = useFonts({
     try {
       const result = await faceRecognitionService.getEnrolledPeople();
       if (result.success) {
-        // Convert the enrolled people to match the local interface
         const localEnrolledPeople: EnrolledPerson[] = result.enrolledPeople.map(person => ({
           name: person.name,
-          imageUri: '', // We don't have image URIs from the backend, so use empty string
-          enrolledAt: person.enrolledAt ? new Date(person.enrolledAt) : new Date(),
+          imageUri: person.imageUri || null,
+          enrolledAt: person.enrolledAt ? new Date(person.enrolledAt) : null,
         }));
         setEnrolledPeople(localEnrolledPeople);
       }
@@ -471,14 +470,16 @@ const [fontsLoaded] = useFonts({
                       ]}
                     >
                       <Text style={styles.resultName}>
-                        {match.externalImageId}
+                        {match.externalImageId || match.faceId || 'Unknown'}
                       </Text>
                       <Text style={styles.resultDetail}>
                         Similarity: {match.similarity.toFixed(1)}%
                       </Text>
-                      <Text style={styles.resultDetail}>
-                        Confidence: {match.confidence.toFixed(1)}%
-                      </Text>
+                      {typeof match.confidence === 'number' && (
+                        <Text style={styles.resultDetail}>
+                          Confidence: {match.confidence.toFixed(1)}%
+                        </Text>
+                      )}
                     </View>
                   ))}
                 </View>
