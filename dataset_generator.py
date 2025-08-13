@@ -427,7 +427,7 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
             print(f"Error releasing pending locks during cleanup: {e}")
     
     # Initialize spot interrupt handler
-    interrupt_handler = SpotInterruptHandler(s3_handler.s3_client, bucket_name, cleanup_callback)
+    interrupt_handler = SpotInterruptHandler(s3_handler.s3_client, bucket_name, cleanup_callback, s3_handler)
     interrupt_handler.start_monitoring()
     
     # Initialize Fawkes protector
@@ -547,6 +547,7 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
                     os.rmdir(work_dir)
             except Exception:
                 pass
+            # No mid-batch refill: queue will be refilled only when empty to honor 3-lock batch semantics.
     
     print(f"Spot instance processing completed. Total files processed: {processed_count}")
     return True

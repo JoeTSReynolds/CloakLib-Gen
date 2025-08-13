@@ -21,10 +21,11 @@ def get_timestamp():
 class SpotInterruptHandler:
     """Handles AWS spot instance interruption gracefully"""
     
-    def __init__(self, s3_client, bucket_name, cleanup_callback=None):
+    def __init__(self, s3_client, bucket_name, cleanup_callback=None, s3_handler_ref=None):
         self.s3_client = s3_client
         self.bucket_name = bucket_name
         self.cleanup_callback = cleanup_callback
+        self.s3_handler_ref = s3_handler_ref  # optional reference to handler for pending lock cleanup
         self.interrupted = False
         self.current_lock_key = None
         self.monitoring_thread = None
@@ -39,9 +40,10 @@ class SpotInterruptHandler:
         print(f"{get_timestamp()} Received interrupt signal {signum}. Starting graceful shutdown...")
         self.interrupted = True
         self.stop_monitoring.set()
+        # Release current lock first to avoid double-delete after bulk cleanup
+        self._release_current_lock()
         if self.cleanup_callback:
             self.cleanup_callback()
-        self._release_current_lock()
         sys.exit(0)
     
     def start_monitoring(self):
@@ -105,7 +107,10 @@ class SpotInterruptHandler:
         if self.current_lock_key:
             try:
                 self.s3_client.delete_object(Bucket=self.bucket_name, Key=self.current_lock_key)
-                print(f"Released lock: {self.current_lock_key}")
+                # Remove from pending set if present
+                if self.s3_handler_ref and self.current_lock_key in self.s3_handler_ref.pending_locks:
+                    self.s3_handler_ref.pending_locks.discard(self.current_lock_key)
+                print(f"Released lock: {self.current_lock_key} (current)")
             except Exception as e:
                 print(f"Error releasing lock {self.current_lock_key}: {e}")
             self.current_lock_key = None
