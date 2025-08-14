@@ -653,6 +653,7 @@ def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_prote
     frames_dir = None
     cloaked_frames_dir = None
     output_path = None
+    frame_work_dir = None
 
     try:
         filename = os.path.basename(local_file_path)
@@ -662,9 +663,11 @@ def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_prote
         work_dir = os.path.dirname(local_file_path)
         frames_dir = os.path.join(work_dir, f"{base_name}_frames")
         cloaked_frames_dir = os.path.join(work_dir, f"{base_name}_cloaked_frames")
+        frame_work_dir = os.path.join(work_dir, f"{base_name}_frame_work")
         
         os.makedirs(frames_dir, exist_ok=True)
         os.makedirs(cloaked_frames_dir, exist_ok=True)
+        os.makedirs(frame_work_dir, exist_ok=True)
         
         # Check for existing progress
         progress_data = s3_handler.load_temp_video_progress(original_s3_key)
@@ -680,6 +683,12 @@ def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_prote
             
             # Extract remaining frames
             remaining_frames = extract_video_frames_from_position(local_file_path, frames_dir, last_processed)
+            # After extracting remaining frames, delete the original local video to save disk
+            try:
+                if os.path.exists(local_file_path):
+                    os.remove(local_file_path)
+            except Exception:
+                pass
             
         else:
             # Start fresh - extract all frames
@@ -697,40 +706,122 @@ def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_prote
                 'started_at': datetime.now(timezone.utc).isoformat()
             }
             s3_handler.save_temp_video_progress(original_s3_key, progress_data)
+            # Delete the original local video to conserve disk
+            try:
+                if os.path.exists(local_file_path):
+                    os.remove(local_file_path)
+            except Exception:
+                pass
         
-        # Process remaining frames in batches
+        # Process frames one-by-one to minimize memory; upload to S3 after each
         remaining_frame_pattern = os.path.join(frames_dir, "frame_*.png")
         all_frames = sorted(glob.glob(remaining_frame_pattern))
         remaining_frames = [f for f in all_frames if int(os.path.basename(f).split('_')[1].split('.')[0]) >= last_processed]
-        
+
         if not remaining_frames:
             remaining_frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
-        
-        # Process frames in batches
-        frame_batches = [remaining_frames[i:i + batch_size] for i in range(0, len(remaining_frames), batch_size)]
-        
-        for batch_id, batch in enumerate(frame_batches):
-            if interrupt_handler.interrupted:
-                print("Interruption detected during video processing. Saving progress...")
-                break
-            
-            print(f"Processing frame batch {batch_id + 1}/{len(frame_batches)}")
-            
-            # Process this batch
-            process_video_frames_batch(batch, fawkes_protector, cloaked_frames_dir, batch_id)
-            
-            # Update progress
-            frames_processed = min((batch_id + 1) * batch_size, len(remaining_frames))
-            progress_data['last_processed_frame'] = last_processed + frames_processed
-            s3_handler.save_temp_video_progress(original_s3_key, progress_data)
-            
-            # Upload temp frames periodically (every 5 batches)
-            if (batch_id + 1) % 5 == 0:
-                s3_handler.upload_temp_frames(cloaked_frames_dir, original_s3_key)
+
+        total_remaining = len(remaining_frames)
+        with tqdm(total=total_remaining, desc="Processing frames") as pbar:
+            for idx, frame_path in enumerate(remaining_frames, start=0):
+                if interrupt_handler.interrupted:
+                    print("Interruption detected during video processing. Saving progress...")
+                    break
+
+                frame_filename = os.path.basename(frame_path)
+                frame_index = int(frame_filename.split('_')[1].split('.')[0])
+
+                # Prepare isolated work dir to avoid Fawkes scanning the whole frames dir
+                try:
+                    # Clean frame_work_dir
+                    for f in os.listdir(frame_work_dir):
+                        try:
+                            os.remove(os.path.join(frame_work_dir, f))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                temp_frame_path = os.path.join(frame_work_dir, frame_filename)
+                try:
+                    shutil.copy2(frame_path, temp_frame_path)
+                except Exception as e:
+                    print(f"Failed to stage frame {frame_filename}: {e}")
+                    # Mark as failed frame: copy original to cloaked to keep sequence
+                    dest_path = os.path.join(cloaked_frames_dir, frame_filename)
+                    try:
+                        shutil.copy2(frame_path, dest_path)
+                    except Exception:
+                        pass
+                    # Upload placeholder to S3 for continuity
+                    temp_key = f"{s3_handler.temp_prefix}{base_name}_frames/{frame_filename}"
+                    s3_handler.upload_file(dest_path if os.path.exists(dest_path) else frame_path, temp_key)
+                    # Update progress and move on
+                    progress_data['last_processed_frame'] = frame_index + 1
+                    s3_handler.save_temp_video_progress(original_s3_key, progress_data)
+                    try:
+                        os.remove(frame_path)
+                    except Exception:
+                        pass
+                    pbar.update(1)
+                    continue
+
+                # Run Fawkes on this single frame
+                try:
+                    fawkes_protector.run_protection(
+                        [temp_frame_path],
+                        batch_size=1,
+                        format='png',
+                        separate_target=True,
+                        debug=False,
+                        no_align=False
+                    )
+                except Exception as e:
+                    print(f"Fawkes failed on frame {frame_filename}: {e}")
+
+                # Determine cloaked output and place into cloaked_frames_dir using original name
+                base_no_ext = os.path.splitext(frame_filename)[0]
+                cloaked_candidate = os.path.join(frame_work_dir, f"{base_no_ext}_cloaked.png")
+                dest_path = os.path.join(cloaked_frames_dir, frame_filename)
+
+                try:
+                    if os.path.exists(cloaked_candidate):
+                        shutil.copy2(cloaked_candidate, dest_path)
+                    else:
+                        # fallback to original if cloaking failed
+                        shutil.copy2(frame_path, dest_path)
+                except Exception as e:
+                    print(f"Error copying cloaked frame {frame_filename}: {e}")
+
+                # Upload this cloaked frame immediately to S3 temp folder
+                temp_key = f"{s3_handler.temp_prefix}{base_name}_frames/{frame_filename}"
+                s3_handler.upload_file(dest_path, temp_key)
+
+                # Update progress after this frame
+                progress_data['last_processed_frame'] = frame_index + 1
+                s3_handler.save_temp_video_progress(original_s3_key, progress_data)
+
+                # Remove the local original frame to save disk
+                try:
+                    os.remove(frame_path)
+                except Exception:
+                    pass
+
+                # Also clear frame_work_dir artifacts for this frame
+                try:
+                    for f in os.listdir(frame_work_dir):
+                        try:
+                            os.remove(os.path.join(frame_work_dir, f))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                pbar.update(1)
         
         # If processing completed without interruption
         if not interrupt_handler.interrupted:
-            # Upload all temp frames
+            # Ensure all temp frames are uploaded (no-op if already uploaded per-frame)
             s3_handler.upload_temp_frames(cloaked_frames_dir, original_s3_key)
             
             # Create final video
@@ -765,7 +856,8 @@ def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_prote
             # Clean up local directories
             shutil.rmtree(frames_dir, ignore_errors=True)
             shutil.rmtree(cloaked_frames_dir, ignore_errors=True)
-            os.remove(output_path)  # Clean up local video file
+            if output_path and os.path.exists(output_path):
+                os.remove(output_path)  # Clean up local video file
             
             return False  # Will be resumed later
     
@@ -781,6 +873,8 @@ def process_aws_video(local_file_path, original_s3_key, s3_handler, fawkes_prote
             shutil.rmtree(cloaked_frames_dir, ignore_errors=True)
         if output_path and os.path.exists(output_path):
             os.remove(output_path)
+        if frame_work_dir and os.path.exists(frame_work_dir):
+            shutil.rmtree(frame_work_dir, ignore_errors=True)
 
 
 def extract_video_frames_from_position(video_path, output_dir, start_frame):

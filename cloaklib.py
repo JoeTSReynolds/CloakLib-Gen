@@ -18,7 +18,7 @@ class CloakingLibrary:
     # Supported video formats
     SUPPORTED_VIDEO_FORMATS = ['.mp4', '.avi', '.mov', '.wmv']
 
-    DATASET_REQUIREMENTS = { #TODO: CHANGED to total sample (Cloaked+Uncloaked - numbers not divisible by 4)
+    DATASET_REQUIREMENTS = {
         "Images": {
             "Age": {
                 "U13": 50,
@@ -44,13 +44,12 @@ class CloakingLibrary:
                 "NoObstruction": 400,
                 "WithObstruction": 100
             },
-            "Race": { #Update these numbers
+            "Race": {
                 "White": 100,
-                "South Asian": 100,
-                "Arab": 100,
-                "East Asian": 100,
-                "Black": 100,
-                "Other": 100
+                "South Asian": 145,
+                "East Asian": 115,
+                "Black": 75,
+                "Other": 15
             }
         },
 
@@ -79,13 +78,12 @@ class CloakingLibrary:
                 "NoObstruction": 400,
                 "WithObstruction": 100
             },
-            "Race": { #Update these numbers
+            "Race": {
                 "White": 100,
-                "South Asian": 100,
-                "Arab": 100,
-                "East Asian": 100,
-                "Black": 100,
-                "Other": 100
+                "South Asian": 145,
+                "East Asian": 115,
+                "Black": 75,
+                "Other": 15
             }
         }
     }
