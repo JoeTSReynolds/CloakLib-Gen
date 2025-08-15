@@ -430,19 +430,6 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
     interrupt_handler = SpotInterruptHandler(s3_handler.s3_client, bucket_name, cleanup_callback, s3_handler)
     interrupt_handler.start_monitoring()
     
-    # Initialize Fawkes protector
-    from fawkes.protection import Fawkes
-    try:
-        fawkes_protector = Fawkes(
-            feature_extractor="arcface_extractor_0",
-            gpu="0",
-            batch_size=batch_size,
-            mode=cloak_level
-        )
-    except Exception as e:
-        print(f"Failed to initialize Fawkes: {str(e)}")
-        return False
-    
     # New queue-based main processing loop (queue of up to 3 locked items)
     processed_count = 0
     queue = []  # each element: {file_key, lock_key, media_type}
@@ -502,19 +489,18 @@ def process_aws_spot_instance(bucket_name, aws_region='eu-west-2', cloak_level='
                 if interrupt_handler.interrupted:
                     break
                 # Adjust Fawkes mode for this level (re-init if needed)
-                # Force protector mode to requested level (videos forced to mid already)
-                if getattr(fawkes_protector, 'mode', None) != level:
-                    try:
-                        fawkes_protector.mode = level
-                    except Exception:
-                        # Fallback: reinitialize protector
-                        from fawkes.protection import Fawkes
-                        fawkes_protector = Fawkes(
-                            feature_extractor="arcface_extractor_0",
-                            gpu="0",
-                            batch_size=batch_size,
-                            mode=level
-                        )
+                 # Initialize Fawkes protector
+                from fawkes.protection import Fawkes
+                try:
+                    fawkes_protector = Fawkes(
+                        feature_extractor="arcface_extractor_0",
+                        gpu="0",
+                        batch_size=batch_size,
+                        mode=level
+                    )
+                except Exception as e:
+                    print(f"Failed to initialize Fawkes: {str(e)}")
+                    return False
                 print(f"  - Level {level} starting for {file_key}")
                 if media_type == 'image':
                     ok = process_aws_image(local_path, file_key, s3_handler, fawkes_protector, level)

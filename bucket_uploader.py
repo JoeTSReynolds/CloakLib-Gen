@@ -35,6 +35,42 @@ def wipe_dataset(s3, bucket, prefix="Dataset/"):
         s3.delete_objects(Bucket=bucket, Delete={"Objects": to_delete})
     print("[RESET] Done.")
 
+def reset_cloaked_level(s3, bucket, level):
+    """Delete all cloaked files of a specific level (low, mid, high)"""
+    if level not in ("low", "mid", "high"):
+        print(f"[ERROR] Invalid level '{level}'. Must be one of: low, mid, high")
+        return
+    
+    paginator = s3.get_paginator("list_objects_v2")
+    print(f"[RESET-LEVEL] Deleting all cloaked '{level}' files from s3://{bucket}/Dataset/Cloaked/ …")
+    
+    to_delete = []
+    deleted_count = 0
+    
+    for page in paginator.paginate(Bucket=bucket, Prefix="Dataset/Cloaked/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            filename = os.path.basename(key)
+            
+            # Check if this is a cloaked file of the specified level
+            # Expected format: name_cloaked_level.ext
+            if f"_cloaked_{level}." in filename and key.lower().endswith((".jpg", ".png", ".mp4")):
+                to_delete.append({"Key": key})
+                
+                # Delete in batches of 1000
+                if len(to_delete) == 1000:
+                    s3.delete_objects(Bucket=bucket, Delete={"Objects": to_delete})
+                    deleted_count += len(to_delete)
+                    print(f"[RESET-LEVEL] Deleted {deleted_count} files so far...")
+                    to_delete = []
+    
+    # Delete remaining files
+    if to_delete:
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": to_delete})
+        deleted_count += len(to_delete)
+    
+    print(f"[RESET-LEVEL] Done. Deleted {deleted_count} cloaked '{level}' files.")
+
 def build_current_counts(s3, bucket):
     paginator = s3.get_paginator("list_objects_v2")
     counts = {
@@ -541,6 +577,7 @@ def main():
     p.add_argument("--csv", help="CSV file (skip first 2 lines)")
     p.add_argument("--data", help="Folder with <name>.jpg/.mp4")
     p.add_argument("--reset", action="store_true", help="Delete all .jpg/.mp4 under Dataset/ in the bucket and exit")
+    p.add_argument("--reset-level", choices=["low", "mid", "high"], help="Delete all cloaked files of a specific level (low, mid, high)")
     p.add_argument("--rebalance", action="store_true", help="Rebalance dataset distribution")
     p.add_argument("--info", action="store_true", help="Display dataset status information")
     p.add_argument("--clean-duplicates", action="store_true", help="Remove duplicate filenames, keeping only one copy in the most balanced location")
@@ -553,6 +590,10 @@ def main():
 
     if args.reset:
         wipe_dataset(s3, bucket)
+        sys.exit(0)
+
+    if args.reset_level:
+        reset_cloaked_level(s3, bucket, args.reset_level)
         sys.exit(0)
 
     if args.info:
