@@ -12,10 +12,14 @@ import {
   Modal,
   FlatList,
   StyleSheet,
+  Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import DropDownPicker from 'react-native-dropdown-picker';
-import faceRecognitionService, { FaceMatch, EnrollmentResult, RecognitionResult, EnrolledPerson } from '../services/faceRecognition';
+import faceRecognitionService, { FaceMatch, EnrollmentResult, RecognitionResult, EnrolledPerson, DatasetFile, EnrollDatasetResult, BatchRecognizeResult } from '../services/faceRecognition';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import {
   useFonts,
   Inter_400Regular,
@@ -51,6 +55,14 @@ const FaceRecognitionScreen: React.FC = () => {
     { label: 'Human (local)', value: 'human' }
   ]);
 
+  // Dataset state
+  const [datasetName, setDatasetName] = useState<string>('');
+  const [isDatasetEnrolling, setIsDatasetEnrolling] = useState<boolean>(false);
+  const [selectedDatasetPeople, setSelectedDatasetPeople] = useState<EnrolledPerson[]>([]);
+  const [batchProbes, setBatchProbes] = useState<DatasetFile[]>([]);
+  const [isBatchRunning, setIsBatchRunning] = useState<boolean>(false);
+  const [batchCsv, setBatchCsv] = useState<string | null>(null);
+
 const [fontsLoaded] = useFonts({
   Inter_400Regular,
   Inter_600SemiBold,
@@ -60,9 +72,9 @@ const [fontsLoaded] = useFonts({
     loadEnrolledPeople();
   }, []);
 
-  const loadEnrolledPeople = async () => {
+  const loadEnrolledPeople = async (maybeDataset?: string) => {
     try {
-      const result = await faceRecognitionService.getEnrolledPeople();
+      const result = await faceRecognitionService.getEnrolledPeople(maybeDataset);
       if (result.success) {
         const localEnrolledPeople: EnrolledPerson[] = result.enrolledPeople.map(person => ({
           name: person.name,
@@ -70,6 +82,7 @@ const [fontsLoaded] = useFonts({
           enrolledAt: person.enrolledAt ? new Date(person.enrolledAt) : null,
         }));
         setEnrolledPeople(localEnrolledPeople);
+        if (maybeDataset) setSelectedDatasetPeople(localEnrolledPeople);
       }
     } catch (error) {
       console.error('Error loading enrolled people:', error);
@@ -92,6 +105,248 @@ const [fontsLoaded] = useFonts({
         setRecognitionImage(result.assets[0].uri);
         setRecognitionResults([]);
       }
+    }
+  };
+
+  // dataset helpers
+  // Cross-platform URI -> base64 helper (handles data:, blob:, file:, content:)
+  const uriToBase64 = async (uri: string): Promise<string> => {
+    try {
+      if (uri.startsWith('data:')) {
+        return uri.split(',')[1];
+      }
+      // Try fetch + FileReader first (works for blob:/http(s):/file: in RN & web)
+      const resp = await fetch(uri);
+      const blob = await resp.blob();
+      return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (e) {
+      // Fallback for content:// or when fetch fails
+      try {
+        const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+        return base64;
+      } catch (err) {
+        console.error('uriToBase64 failed for', uri, err);
+        throw err;
+      }
+    }
+  };
+
+  const fileUriToDatasetFile = async (
+    uri: string,
+    opts?: { filename?: string; mimeType?: string }
+  ): Promise<DatasetFile> => {
+    // Prefer filename from DocumentPicker when available; fall back to URI; otherwise generate
+    console.log('uri:', uri);
+
+    const inferExtFromMime = (mt?: string): string => {
+      const map: Record<string, string> = {
+        'image/jpeg': '.jpg',
+        'image/jpg': '.jpg',
+        'image/png': '.png',
+        'image/webp': '.webp',
+        'image/gif': '.gif',
+        'image/bmp': '.bmp',
+        'image/tiff': '.tiff',
+        'image/tif': '.tif',
+      };
+      return (mt && map[mt.toLowerCase()]) || '.jpg';
+    };
+
+    const getMimeFromDataUri = (u: string): string | undefined => {
+      // data:[<mediatype>][;base64],<data>
+      if (!u.startsWith('data:')) return undefined;
+      const semi = u.indexOf(';');
+      if (semi === -1) return undefined;
+      const mt = u.substring(5, semi); // after 'data:' up to ';'
+      return mt || undefined;
+    };
+
+    const filenameFromOpts = opts?.filename && opts.filename.trim().length ? opts.filename.trim() : undefined;
+
+    let name: string | undefined = filenameFromOpts;
+
+    if (!name) {
+      // Try to parse from URI path only when it looks like a path/URL
+      const looksLikePath = uri.startsWith('file://') || uri.startsWith('content://') || uri.startsWith('http');
+      if (looksLikePath) {
+        const cleaned = uri.split('?')[0];
+        const candidate = cleaned.split('/').pop();
+        if (candidate && candidate.includes('.')) {
+          name = candidate;
+        }
+      }
+    }
+
+    if (!name) {
+      // data URI or no usable name; derive extension from mimeType or data URI
+      const mime = opts?.mimeType || getMimeFromDataUri(uri);
+      const ext = inferExtFromMime(mime);
+      name = `file_${Date.now()}${ext}`;
+    }
+
+    console.log('name:', name);
+    const base64 = await uriToBase64(uri);
+
+    // normalise name:
+    if (name) {
+      // Remove trailing _number.ext (e.g. Bella_Ramsey_1245.jpg -> Bella_Ramsey)
+      name = name.replace(/(_\d+)?\.[^.]+$/, '');
+    }
+
+    return { name, data: base64 };
+  };
+
+  const pickDatasetImages = async () => {
+    try {
+      const result: any = await DocumentPicker.getDocumentAsync({ type: 'image/*', multiple: true, copyToCacheDirectory: true });
+      if (result?.canceled) return [] as DatasetFile[];
+      // Normalized assets array across SDKs/platforms
+      const assets = Array.isArray(result?.assets)
+        ? result.assets
+        : (result?.uri ? [result] : []);
+      const files: DatasetFile[] = [];
+    for (const a of assets) {
+        try {
+          if (!a?.uri) continue;
+      const f = await fileUriToDatasetFile(a.uri, { filename: a?.name, mimeType: a?.mimeType });
+          files.push(f);
+        } catch (convErr) {
+          console.warn('Skipping file due to conversion error:', a?.name || a?.uri, convErr);
+        }
+      }
+      console.log('Picked dataset images count:', files.length);
+      return files;
+    } catch (e) {
+      console.error('pickDatasetImages error', e);
+      return [] as DatasetFile[];
+    }
+  };
+
+  const enrollDataset = async () => {
+    if (!datasetName.trim()) {
+      Alert.alert('Missing name', 'Enter a dataset name first');
+      return;
+    }
+    const files = await pickDatasetImages();
+    if (!files.length) {
+      Alert.alert('No images selected');
+      return;
+    }
+    setIsDatasetEnrolling(true);
+    try {
+      const res: EnrollDatasetResult = await faceRecognitionService.enrollDataset(datasetName.trim(), files);
+      if (res.success) {
+        await loadEnrolledPeople(datasetName.trim());
+        Alert.alert('Success', res.message || 'Dataset enrolled');
+      } else {
+        Alert.alert('Failed', res.message || 'Dataset enroll failed');
+      }
+    } catch (e) {
+      Alert.alert('Error', 'Failed to enroll dataset');
+    } finally {
+      setIsDatasetEnrolling(false);
+    }
+  };
+
+  const pickBatchProbes = async () => {
+    try {
+      const result: any = await DocumentPicker.getDocumentAsync({ type: 'image/*', multiple: true, copyToCacheDirectory: true });
+      if (result?.canceled) return;
+      const assets = Array.isArray(result?.assets)
+        ? result.assets
+        : (result?.uri ? [result] : []);
+      const files: DatasetFile[] = [];
+    for (const a of assets) {
+        try {
+          if (!a?.uri) continue;
+      const f = await fileUriToDatasetFile(a.uri, { filename: a?.name, mimeType: a?.mimeType });
+          files.push(f);
+        } catch (convErr) {
+          console.warn('Skipping probe due to conversion error:', a?.name || a?.uri, convErr);
+        }
+      }
+      console.log('Picked probe images count:', files.length);
+      setBatchProbes(files);
+    } catch (e) {
+      console.error('pickBatchProbes error', e);
+    }
+  };
+
+  const runBatchRecognition = async () => {
+    if (!datasetName.trim()) { Alert.alert('Error', 'Enter dataset name first'); return; }
+    if (!batchProbes.length) { Alert.alert('Error', 'Pick probe images first'); return; }
+    setIsBatchRunning(true); setBatchCsv(null);
+    try {
+      const res: BatchRecognizeResult = await faceRecognitionService.batchRecognize(datasetName.trim(), batchProbes);
+      console.log('Batch recognition response:', res);
+      if (res.success && res.csv) {
+        setBatchCsv(res.csv);
+        console.log('CSV data received, length:', res.csv.length);
+      } else {
+        Alert.alert('Failed', res.message || 'Batch failed');
+      }
+    } catch (e) {
+      console.error('Batch recognition error:', e);
+      Alert.alert('Error', 'Batch failed');
+    }
+    finally { setIsBatchRunning(false); }
+  };
+
+  const downloadCsv = async () => {
+    if (!batchCsv) {
+      Alert.alert('Error', 'No CSV data available to download');
+      return;
+    }
+    try {
+      const filename = `batch_results_${datasetName}_${Date.now()}.csv`;
+      console.log('Starting CSV download, filename:', filename);
+      console.log('CSV data length:', batchCsv.length);
+      
+      // Check if we're on web platform
+      if (Platform.OS === 'web') {
+        // Web platform: create and trigger download
+        console.log('Using web download method');
+        const blob = new Blob([batchCsv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        console.log('CSV downloaded successfully on web');
+        Alert.alert('Success', 'CSV file downloaded to your Downloads folder');
+      } else {
+        // Mobile platform: use Expo FileSystem and Sharing
+        console.log('Using mobile download method');
+        const path = FileSystem.cacheDirectory + filename;
+        console.log('Writing CSV to:', path);
+        await FileSystem.writeAsStringAsync(path, batchCsv, { encoding: FileSystem.EncodingType.UTF8 });
+        
+        console.log('CSV written, checking sharing availability...');
+        if (await Sharing.isAvailableAsync()) {
+          console.log('Sharing CSV file...');
+          await Sharing.shareAsync(path, {
+            mimeType: 'text/csv',
+            dialogTitle: 'Save Batch Recognition Results',
+          });
+        } else {
+          Alert.alert('CSV Saved', `File saved to: ${path}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error downloading CSV:', error);
+      Alert.alert('Error', 'Failed to download CSV file');
     }
   };
   
@@ -296,13 +551,25 @@ const [fontsLoaded] = useFonts({
             Try Doubleday
           </Text>
         </View>
+
+        {/* Single Image Demo Section */}
+        <View style={styles.textcontainer}>
+          <Text style={styles.sectionHeading}>
+            Single Image Demo
+          </Text>
+        </View>
+
+        {/* Header with View Enrolled Button for Default Collection */}
         <View style={styles.headerRow}>
           <TouchableOpacity
-            onPress={() => setShowEnrolledModal(true)}
+            onPress={async () => { 
+              await loadEnrolledPeople(); // Load default collection
+              setShowEnrolledModal(true); 
+            }}
             style={styles.viewEnrolledButton}
           >
             <Text style={styles.viewEnrolledButtonText}>
-              View Enrolled Persons({enrolledPeople.length})
+              View Enrolled Persons (Default Collection)
             </Text>
           </TouchableOpacity>
         </View>
@@ -483,6 +750,63 @@ const [fontsLoaded] = useFonts({
                     </View>
                   ))}
                 </View>
+              )}
+            </View>
+          </View>
+        </View>
+
+        {/* Batch Demo Section */}
+        <View style={styles.textcontainer}>
+          <Text style={styles.sectionHeading}>
+            Batch Demo
+          </Text>
+        </View>
+
+        <View style={width > 768 ? styles.desktopLayout : styles.mobileLayout}>
+          {/* Dataset Enrollment */}
+          <View style={styles.sectionContainer}>
+            <View style={styles.card}>
+              <Text style={styles.cardHeading}>Dataset Enrollment</Text>
+              <TextInput style={styles.textInput} placeholder="Dataset name" value={datasetName} onChangeText={setDatasetName} placeholderTextColor="#9CA3AF" />
+              {!datasetName.trim() && (
+                <Text style={{ color: 'red', marginBottom: 8 }}>Enter a name for the dataset first</Text>
+              )}
+              <TouchableOpacity style={[styles.selectImageButton, !datasetName.trim() && styles.disabledButton]} onPress={enrollDataset} disabled={isDatasetEnrolling || !datasetName.trim()}>
+                {isDatasetEnrolling ? <ActivityIndicator color="#fff" /> : <Text style={styles.selectImageButtonText}>Pick images and Enroll Dataset</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.viewEnrolledButton, !datasetName.trim() && styles.disabledButton]} 
+                onPress={async () => { 
+                  if (!datasetName.trim()) {
+                    Alert.alert('No Dataset', 'Please enter a dataset name first');
+                    return;
+                  }
+                  await loadEnrolledPeople(datasetName.trim()); 
+                  setShowEnrolledModal(true); 
+                }}
+                disabled={!datasetName.trim()}
+              >
+                <Text style={styles.viewEnrolledButtonText}>View Enrolled (Dataset)</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Batch Recognition */}
+          <View style={styles.sectionContainer}>
+            <View style={styles.card}>
+              <Text style={styles.cardHeading}>Batch Recognition</Text>
+              <Text style={styles.textbody}>Dataset: {datasetName || '(Enter on the left)'}</Text>
+              <TouchableOpacity style={styles.selectImageButton} onPress={pickBatchProbes}>
+                <Text style={styles.selectImageButtonText}>Pick Probe Images</Text>
+              </TouchableOpacity>
+              <Text style={styles.textbody}>Selected: {batchProbes.length} images</Text>
+              <TouchableOpacity style={[styles.recognizeImageButton]} onPress={runBatchRecognition} disabled={isBatchRunning || !batchProbes.length || !datasetName.trim()}>
+                {isBatchRunning ? <ActivityIndicator color="#fff" /> : <Text style={styles.selectImageButtonText}>Run Batch</Text>}
+              </TouchableOpacity>
+              {batchCsv && (
+                <TouchableOpacity style={[styles.viewEnrolledButton]} onPress={downloadCsv}>
+                  <Text style={styles.viewEnrolledButtonText}>Download CSV</Text>
+                </TouchableOpacity>
               )}
             </View>
           </View>

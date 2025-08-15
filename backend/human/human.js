@@ -8,7 +8,8 @@ const tf = require('@tensorflow/tfjs-node');
 // ------------ config -------------
 const PORT = process.env.PORT || 5002;
 const DEFAULT_IMAGES_DIR = path.resolve(__dirname, '..', 'images'); // ../images
-const DB_FILE = path.join(__dirname, 'faces-db.json');
+const DEFAULT_DB_FILE = path.join(__dirname, 'faces-db.json');
+let DB_FILE = path.join(__dirname, 'faces-db.json');
 // ----------------------------------
 
 // Minimal DB structure:
@@ -25,22 +26,42 @@ const DB_FILE = path.join(__dirname, 'faces-db.json');
 // }
 let facesDB = { images: {} };
 
-function loadDB() {
-  if (fs.existsSync(DB_FILE)) {
-    try {
-      facesDB = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-    } catch (e) {
-      console.error('[HUMAN] Failed to parse DB, starting fresh:', e.message);
-      facesDB = { images: {} };
+function resolveDbFile(dbFileOrName) {
+  if (!dbFileOrName) return DB_FILE;
+  let f = dbFileOrName;
+  if (!f.endsWith('.json')) f = `${f}.json`;
+  if (!path.isAbsolute(f)) f = path.join(__dirname, f);
+  return f;
+}
+
+function loadDBFile(filePath) {
+  try {
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      return JSON.parse(raw);
     }
+  } catch (e) {
+    console.error('[HUMAN] Failed to parse DB', filePath, 'starting fresh:', e.message);
+  }
+  return { images: {} };
+}
+
+function saveDBFile(filePath, dbObj) {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(dbObj, null, 2));
+  } catch (e) {
+    console.error('[HUMAN] Failed to save DB', filePath, e.message);
   }
 }
 
-function saveDB() {
-  fs.writeFileSync(DB_FILE, JSON.stringify(facesDB, null, 2));
+function switchDB(dbFileOrName) {
+  const next = resolveDbFile(dbFileOrName);
+  DB_FILE = next;
+  facesDB = loadDBFile(DB_FILE);
 }
 
-loadDB();
+// init default DB
+facesDB = loadDBFile(DB_FILE);
 
 const human = new Human({
   modelBasePath: 'https://cdn.jsdelivr.net/npm/@vladmandic/human/models/',
@@ -54,6 +75,40 @@ const human = new Human({
   },
   logger: 'verbose'
 });
+
+function getNameFromFilename(filename) {
+  // Extract name from filename (before numbers)
+  const match = filename.match(/^(.*?)(_\d+)?\.(jpg|jpeg|png|webp)$/i);
+  return match ? match[1] : filename;
+}
+
+// We stick to filename-derived names: <Name>_123.jpg -> <Name>
+function getNameFromPath(filePath) {
+  return getNameFromFilename(path.basename(filePath));
+}
+
+function listImageFilesRecursive(rootDir) {
+  const out = [];
+  const stack = [rootDir];
+  while (stack.length) {
+    const cur = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch (e) {
+      continue;
+    }
+    for (const ent of entries) {
+      const p = path.join(cur, ent.name);
+      if (ent.isDirectory()) stack.push(p);
+      else if (ent.isFile()) {
+        const l = ent.name.toLowerCase();
+        if (l.endsWith('.jpg') || l.endsWith('.jpeg') || l.endsWith('.png') || l.endsWith('.webp')) out.push(p);
+      }
+    }
+  }
+  return out;
+}
 
 (async () => {
   await human.init();
@@ -97,58 +152,122 @@ const human = new Human({
     }
 
     facesDB.images[filename] = {
-      name: filename.split('_')[0], // use first part of filename as name (before first underscore)
+      name: getNameFromPath(resolved), // prefer folder name (dataset person) else filename stem
       path: resolved,
       embeddings,
       enrolledAt: new Date().toISOString()
     };
-    saveDB();
+    saveDBFile(DB_FILE, facesDB);
     return { added: true, filename, embeddingsCount: embeddings.length };
   }
 
   // SYNC-DB: scan images dir, add new, remove missing
   app.post('/sync-db', async (req, res) => {
     try {
-      const imagesDir = req.body && req.body.imagesDir ? req.body.imagesDir : DEFAULT_IMAGES_DIR;
-      const resolvedDir = path.isAbsolute(imagesDir) ? imagesDir : path.resolve(imagesDir);
-      if (!fs.existsSync(resolvedDir)) {
+        const imagesDir = req.body && req.body.imagesDir ? req.body.imagesDir : DEFAULT_IMAGES_DIR;
+        const dbFileArg = (req.body && (req.body.dbFile || req.body.datasetName)) || null;
+        if (dbFileArg) {
+        const name = req.body.datasetName ? `${req.body.datasetName}_faces-db.json` : dbFileArg;
+          switchDB(name);
+        } else {
+          switchDB(DEFAULT_DB_FILE);
+        }
+        const resolvedDir = path.isAbsolute(imagesDir) ? imagesDir : path.resolve(imagesDir);
+        if (!fs.existsSync(resolvedDir)) {
         return res.status(400).json({ success: false, message: `imagesDir not found: ${resolvedDir}` });
-      }
-
-      const files = fs.readdirSync(resolvedDir).filter(f => {
-        const l = f.toLowerCase();
-        return l.endsWith('.jpg') || l.endsWith('.jpeg') || l.endsWith('.png') || l.endsWith('.webp');
-      });
-
-      // Remove DB entries that don't exist on disk
-      const dbFilenames = Object.keys(facesDB.images);
-      for (const fn of dbFilenames) {
-        const entry = facesDB.images[fn];
-        if (!fs.existsSync(entry.path)) {
-          delete facesDB.images[fn];
         }
-      }
 
-      // Add new files
-      let added = 0;
-      for (const file of files) {
-        const filepath = path.join(resolvedDir, file);
-        if (!facesDB.images[file] || facesDB.images[file].path !== filepath) {
-          try {
-            const r = await processSingleImage(filepath);
-            if (r.added) added++;
-            else console.warn('[HUMAN] sync: skipped', file, r.reason || '');
-          } catch (e) {
+        let files = [];
+        let filePersonPairs = [];
+
+        if (req.body && req.body.personNames && Array.isArray(req.body.personNames)) {
+        // For each person name, find all matching files in imagesDir
+        const personNames = req.body.personNames;
+        const allFiles = listImageFilesRecursive(resolvedDir);
+
+        // Build regex for each person name and collect matches
+        for (const name of personNames) {
+            // Match: name_somenumber.{jpg,png,webp,jpeg} or name_cloaked_{low,mid,high}.{jpg,png,webp,jpeg}
+            const regex = new RegExp(`^${name}(_\\d+)?(_cloaked_(low|mid|high))?\\.(jpg|jpeg|png|webp)$`, 'i');
+            for (const filePath of allFiles) {
+            const base = path.basename(filePath);
+            if (regex.test(base)) {
+            filePersonPairs.push({ filePath, personName: name });
+            }
+            }
+        }
+        files = filePersonPairs;
+        } else {
+        // Default: all files, person name from filename
+        const allFiles = listImageFilesRecursive(resolvedDir);
+        files = allFiles.map(filePath => ({
+            filePath,
+            personName: getNameFromFilename(path.basename(filePath))
+        }));
+        }
+
+        // Remove DB entries that aren't in files array
+        const validFileSet = new Set(files.map(f => path.basename(f.filePath)));
+        for (const fn of Object.keys(facesDB.images)) {
+        if (!validFileSet.has(fn)) {
+            delete facesDB.images[fn];
+        }
+        }
+
+        // Add new files
+        let added = 0;
+        for (const { filePath, personName } of files) {
+        const file = path.basename(filePath);
+        if (!facesDB.images[file] || facesDB.images[file].path !== filePath) {
+            try {
+            // processSingleImage will use getNameFromPath, but we want to override with personName
+            const embeddings = await computeEmbeddingsFromPath(filePath);
+            if (!embeddings || embeddings.length === 0) {
+            console.warn('[HUMAN] sync: skipped', file, 'no-face');
+            continue;
+            }
+            facesDB.images[file] = {
+            name: personName,
+            path: filePath,
+            embeddings,
+            enrolledAt: new Date().toISOString()
+            };
+            added++;
+            } catch (e) {
             console.warn('[HUMAN] sync error for', file, e.message);
-          }
+            }
         }
-      }
+        }
 
-      saveDB();
-      return res.json({ success: true, message: 'sync complete', added, total: Object.keys(facesDB.images).length });
+    //   // Remove DB entries that don't exist on disk
+    //   const dbFilenames = Object.keys(facesDB.images);
+    //   for (const fn of dbFilenames) {
+    //     const entry = facesDB.images[fn];
+    //     if (!fs.existsSync(entry.path)) {
+    //       delete facesDB.images[fn];
+    //     }
+    //   }
+
+    //   // Add new files
+    //   let added = 0;
+    //   for (const filepath of files) {
+    //     const file = path.basename(filepath);
+    //     if (!facesDB.images[file] || facesDB.images[file].path !== filepath) {
+    //       try {
+    //         const r = await processSingleImage(path.join(imagesDir, filename));
+    //         if (r.added) added++;
+    //         else console.warn('[HUMAN] sync: skipped', file, r.reason || '');
+    //       } catch (e) {
+    //         console.warn('[HUMAN] sync error for', file, e.message);
+    //       }
+    //     }
+    //   }
+
+        saveDBFile(DB_FILE, facesDB);
+        return res.json({ success: true, message: 'sync complete', added, total: Object.keys(facesDB.images).length });
     } catch (err) {
-      console.error('[HUMAN] /sync-db error:', err);
-      return res.status(500).json({ success: false, message: err.message });
+        console.error('[HUMAN] /sync-db error:', err);
+        return res.status(500).json({ success: false, message: err.message });
     }
   });
 
@@ -157,6 +276,11 @@ const human = new Human({
   app.post('/enroll', async (req, res) => {
     try {
       const imagePath = req.body && req.body.path;
+      const dbFileArg = (req.body && (req.body.dbFile || req.body.datasetName)) || null;
+      if (dbFileArg) {
+        const name = req.body.datasetName ? `${req.body.datasetName}_faces-db.json` : dbFileArg;
+        switchDB(name);
+      }
       if (!imagePath) return res.status(400).json({ success: false, message: 'Missing path' });
       const r = await processSingleImage(imagePath);
       if (!r.added) return res.status(400).json({ success: false, message: 'No face found or image skipped', reason: r.reason });
@@ -169,6 +293,11 @@ const human = new Human({
 
   // LIST enrolled images (debug)
   app.get('/list-enrolled', (req, res) => {
+    const dbFileArg = req.query && (req.query.dbFile || req.query.datasetName);
+    if (dbFileArg) {
+      const name = req.query.datasetName ? `${req.query.datasetName}_faces-db.json` : dbFileArg;
+      switchDB(name);
+    }
     const list = Object.entries(facesDB.images).map(([filename, entry]) => ({
       filename,
       name: entry.name,
@@ -182,7 +311,11 @@ const human = new Human({
   // MATCH: { path: "/path/to/probe.jpg" OR filename, threshold: 0.6, topk: 5 }
   app.post('/match', async (req, res) => {
     try {
-      let { path: probePath, threshold = 0.6, topk = 5 } = req.body || {};
+      let { path: probePath, threshold = 0.6, topk = 5, dbFile, datasetName, imagesDir } = req.body || {};
+      if (dbFile || datasetName) {
+        const name = datasetName ? `${datasetName}_faces-db.json` : dbFile;
+        switchDB(name);
+      }
       if (!probePath) return res.status(400).json({ success: false, message: 'Missing path' });
       threshold = parseFloat(threshold);
       topk = parseInt(topk, 10) || 5;
@@ -195,20 +328,17 @@ const human = new Human({
         (async () => {
           try {
             // Quick internal sync: add any missing files from DEFAULT_IMAGES_DIR
-            const resolvedDir = DEFAULT_IMAGES_DIR;
+            const resolvedDir = imagesDir ? (path.isAbsolute(imagesDir) ? imagesDir : path.resolve(imagesDir)) : DEFAULT_IMAGES_DIR;
             if (fs.existsSync(resolvedDir)) {
-              const files = fs.readdirSync(resolvedDir).filter(f => {
-                const l = f.toLowerCase();
-                return l.endsWith('.jpg') || l.endsWith('.jpeg') || l.endsWith('.png') || l.endsWith('.webp');
-              });
-              for (const file of files) {
-                const filepath = path.join(resolvedDir, file);
+              const files = listImageFilesRecursive(resolvedDir);
+              for (const filepath of files) {
+                const file = path.basename(filepath);
                 if (!facesDB.images[file]) {
                   try { await processSingleImage(filepath); } catch (e) { /* ignore for sync */ }
                 }
               }
             }
-            saveDB();
+            saveDBFile(DB_FILE, facesDB);
             resolve();
           } catch (e) { reject(e); }
         })();
@@ -236,7 +366,7 @@ const human = new Human({
       // Now compare probe embeddings to every other image's embeddings (skip itself)
       const results = []; // { filename, name, similarity }
       for (const [filename, entry] of Object.entries(facesDB.images)) {
-        if (filename === probeFilename) continue; // skip itself
+        if (filename == probeFilename) continue; // skip itself
         if (!entry.embeddings || entry.embeddings.length === 0) continue;
         // compute best similarity across all face pairs (probe faces vs db faces)
         let bestSim = -1;
