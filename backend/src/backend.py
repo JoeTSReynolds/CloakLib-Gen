@@ -108,7 +108,7 @@ def start_human_server():
             pk = face.get('ExternalImageId')
             if pk:
                 personNames.append(pk)
-        r = requests.post(f"{HUMAN_SERVER_URL}/sync-db", json={"imagesDir": str(IMAGES_DIR), "personNames": personNames}, timeout=30)
+        r = requests.post(f"{HUMAN_SERVER_URL}/sync-db", json={"imagesDir": str(IMAGES_DIR), "personNames": personNames})
         print("[PY] Human sync response:", r.status_code, r.text)
     except Exception as e:
         print("[PY] Human sync failed:", e)
@@ -171,12 +171,24 @@ def _enroll_face_internal(image_data, person_name, selected_mode=None, face_coll
             f.write(body)
 
         # cloak if requested
+        cloaked_filename = None
+        cloaked_data_uri = None
         if selected_mode in ('high', 'mid', 'low'):
             try:
                 cloaked_path = cloak_image(str(local_path), selected_mode)
                 # overwrite local_path with cloaked image so Human sees the cloaked one
                 if os.path.exists(cloaked_path):
                     shutil.copy(cloaked_path, local_path)
+                    try:
+                        # Prepare cloaked preview as data URI for client
+                        with open(cloaked_path, 'rb') as cf:
+                            cb = cf.read()
+                        b64 = base64.b64encode(cb).decode('utf-8')
+                        cloaked_data_uri = f'data:image/png;base64,{b64}'
+                        from pathlib import Path as _P
+                        cloaked_filename = _P(cloaked_path).name
+                    except Exception as ie:
+                        print('[PY] Failed preparing cloaked preview:', ie)
             except Exception as e:
                 print("[PY] Cloak failed, continuing:", e)
 
@@ -201,12 +213,20 @@ def _enroll_face_internal(image_data, person_name, selected_mode=None, face_coll
         except Exception as e:
             print("[PY] Human enroll failed:", e)
 
-        return {
+        result = {
             'success': True, 
             'facesIndexed': faces_indexed, 
             'message': f'Enrolled {person_name}', 
             'local_filename': local_filename
         }
+
+        # Attach cloaked info if present
+        if cloaked_filename:
+            result['cloakedFilename'] = cloaked_filename
+            result['cloakedImageUri'] = cloaked_data_uri
+            # return relative download path
+            result['downloadPath'] = f"/api/download-image?file={cloaked_filename}"
+        return result
 
     except Exception as e:
         print("[PY] _enroll_face_internal error:", e)
@@ -233,6 +253,30 @@ def enroll_face():
             
     except Exception as e:
         print("[PY] enroll_face error:", e)
+        return jsonify(success=False, message='Internal server error'), 500
+
+
+@app.route('/api/download-image', methods=['GET'])
+def download_image():
+    """Download an image from the server by filename within IMAGES_DIR.
+    Query: file=filename.ext
+    """
+    try:
+        fname = request.args.get('file')
+        if not fname:
+            return jsonify(success=False, message='Missing file parameter'), 400
+        # Prevent path traversal
+        candidate = (IMAGES_DIR / fname).resolve()
+        if not str(candidate).startswith(str(IMAGES_DIR)):
+            return jsonify(success=False, message='Invalid path'), 400
+        if not candidate.exists() or not candidate.is_file():
+            return jsonify(success=False, message='File not found'), 404
+        # Guess mime
+        ext = candidate.suffix.lower()
+        mime = 'image/png' if ext == '.png' else 'image/jpeg'
+        return send_file(str(candidate), mimetype=mime, as_attachment=True, download_name=candidate.name)
+    except Exception as e:
+        print('[PY] download_image error:', e)
         return jsonify(success=False, message='Internal server error'), 500
 
 
@@ -710,7 +754,7 @@ def batch_recognize():
                                 if isinstance(sim, (int, float)) and sim <= 1.0:
                                     sim = sim * 100.0
                                 human_sim = float(sim or 0.0)
-                                human_match = htop.get('filename') or htop.get('name')
+                                human_match = htop.get('name') or htop.get('filename')
                         
                         # Clean up temp file
                         if temp_file.exists():
@@ -755,7 +799,7 @@ def batch_recognize():
 
         # Build CSV
         print(f'[PY] Building CSV with {len(rows)} rows')
-        csv_lines = ["Image Name,Rekognition Similarity,Rekognition matched image,Human similarity,Human matched image"]
+        csv_lines = ["Image Name,Rekognition Similarity,Rekognition matched person,Human similarity,Human matched person"]
         for r in rows:
             # escape commas in names if present
             safe = [str(x).replace('\n', ' ').replace(',', ';') for x in r]

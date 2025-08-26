@@ -37,6 +37,8 @@ const FaceRecognitionScreen: React.FC = () => {
   const [isRecognizing, setIsRecognizing] = useState<boolean>(false);
   const [recognitionResults, setRecognitionResults] = useState<FaceMatch[]>([]);
   const [enrollmentMessage, setEnrollmentMessage] = useState<string>('');
+  const [cloakedPreviewUri, setCloakedPreviewUri] = useState<string | null>(null);
+  const [cloakedDownloadUrl, setCloakedDownloadUrl] = useState<string | null>(null);
   const [enrolledPeople, setEnrolledPeople] = useState<EnrolledPerson[]>([]);
   const [showEnrolledModal, setShowEnrolledModal] = useState<boolean>(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -93,8 +95,7 @@ const [fontsLoaded] = useFonts({
   const pickImage = async (type: 'enrollment' | 'recognition') => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
+      allowsEditing: false,
       quality: 1,
     });
 
@@ -361,9 +362,11 @@ const [fontsLoaded] = useFonts({
 
     setIsEnrolling(true);
     setEnrollmentMessage('');
+  setCloakedPreviewUri(null);
+  setCloakedDownloadUrl(null);
 
     try {
-      // Use real AWS backend implementation
+      // Use backend implementation
       const result: EnrollmentResult = await faceRecognitionService.enrollFace(
         enrollmentImage,
         personName.trim(),
@@ -372,6 +375,20 @@ const [fontsLoaded] = useFonts({
 
       if (result.success) {
         setEnrollmentMessage(result.message || 'Face enrolled successfully!');
+        // If cloaked, show preview and store download URL
+        if (result.cloakedImageUri) {
+          setCloakedPreviewUri(result.cloakedImageUri);
+          if (result.downloadPath) {
+            const base = faceRecognitionService.getBaseUrl().replace(/\/$/, '');
+            setCloakedDownloadUrl(base + result.downloadPath);
+          } else if (result.cloakedFilename) {
+            const base = faceRecognitionService.getBaseUrl().replace(/\/$/, '');
+            setCloakedDownloadUrl(`${base}/api/download-image?file=${encodeURIComponent(result.cloakedFilename)}`);
+          }
+        } else {
+          setCloakedPreviewUri(null);
+          setCloakedDownloadUrl(null);
+        }
         // Add to enrolled people list
         const newPerson: EnrolledPerson = {
           name: personName.trim(),
@@ -379,9 +396,6 @@ const [fontsLoaded] = useFonts({
           enrolledAt: new Date(),
         };
         setEnrolledPeople(prev => [...prev, newPerson]);
-        setPersonName('');
-        setEnrollmentImage(null);
-        
         await loadEnrolledPeople();
       } else {
         Alert.alert('Error', result.message || 'Failed to enroll face');
@@ -390,7 +404,7 @@ const [fontsLoaded] = useFonts({
       Alert.alert('Error', 'An unexpected error occurred');
     } finally {
       setIsEnrolling(false);
-    }
+  }
   };
 
     // Example API call functions
@@ -569,7 +583,7 @@ const [fontsLoaded] = useFonts({
             style={styles.viewEnrolledButton}
           >
             <Text style={styles.viewEnrolledButtonText}>
-              View Enrolled Persons (Default Collection)
+              View Enrolled Persons
             </Text>
           </TouchableOpacity>
         </View>
@@ -597,9 +611,10 @@ const [fontsLoaded] = useFonts({
                   source={{ uri: enrollmentImage }}
                   style={[
                     styles.selectedImage,
-                    { height: width > 768 ? 200 : 180 }
+                    styles.fullImage,
+                    { height: width > 768 ? 260 : 220 }
                   ]}
-                  resizeMode="cover"
+                  resizeMode="contain"
                 />
               )}
 
@@ -644,10 +659,53 @@ const [fontsLoaded] = useFonts({
                 )}
               </TouchableOpacity>
 
-              {enrollmentMessage && (
-                <Text style={styles.successMessage}>
-                  {enrollmentMessage}
-                </Text>
+              {enrollmentMessage ? (
+                <Text style={styles.successMessage}>{enrollmentMessage}</Text>
+              ) : null}
+
+              {/* Cloaked preview + download (only when cloaking selected) */}
+              {cloakedPreviewUri && (
+                <View style={{ marginTop: 12 }}>
+                  <Text style={styles.sectionTitle}>Cloaked Image</Text>
+                  <Image
+                    source={{ uri: cloakedPreviewUri }}
+                    style={[styles.selectedImage, styles.fullImage, { height: width > 768 ? 260 : 220 }]}
+                    resizeMode="contain"
+                  />
+                  {cloakedDownloadUrl && (
+                    <TouchableOpacity
+                      style={[styles.viewEnrolledButton, { marginTop: 10 }]}
+                      onPress={async () => {
+                        try {
+                          const url = cloakedDownloadUrl;
+                          if (Platform.OS === 'web') {
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = '';
+                            a.style.display = 'none';
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                          } else {
+                            const filename = `cloaked_${Date.now()}.png`;
+                            const path = FileSystem.cacheDirectory + filename;
+                            const res = await FileSystem.downloadAsync(url, path);
+                            if (await Sharing.isAvailableAsync()) {
+                                await Sharing.shareAsync(res.uri, { mimeType: 'image/png', dialogTitle: 'Save Cloaked Image' });
+                            } else {
+                                Alert.alert('Saved', `File saved to: ${res.uri}`);
+                            }
+                          }
+                        } catch (e) {
+                          console.error('Cloaked download failed', e);
+                          Alert.alert('Error', 'Failed to download cloaked image');
+                        }
+                      }}
+                    >
+                      <Text style={styles.viewEnrolledButtonText}>Download Cloaked Image</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               )}
             </View>
           </View>
@@ -669,11 +727,8 @@ const [fontsLoaded] = useFonts({
               {recognitionImage && (
                 <Image
                   source={{ uri: recognitionImage }}
-                  style={[
-                    styles.selectedImage,
-                    { height: width > 768 ? 200 : 180 }
-                  ]}
-                  resizeMode="cover"
+                  style={[styles.selectedImage, styles.fullImage, { height: width > 768 ? 260 : 220 }]}
+                  resizeMode="contain"
                 />
               )}
 
@@ -1057,6 +1112,10 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     marginBottom: 16,
     maxHeight: 300,
+  },
+  fullImage: {
+    borderRadius: 8,
+    backgroundColor: '#F3F4F6',
   },
   textInput: {
     borderWidth: 1,

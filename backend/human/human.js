@@ -233,6 +233,7 @@ function listImageFilesRecursive(rootDir) {
             enrolledAt: new Date().toISOString()
             };
             added++;
+            console.log('[HUMAN] sync: added', file, 'as', personName);
             } catch (e) {
             console.warn('[HUMAN] sync error for', file, e.message);
             }

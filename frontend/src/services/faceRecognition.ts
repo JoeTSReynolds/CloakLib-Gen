@@ -10,6 +10,10 @@ export interface EnrollmentResult {
   facesIndexed: number;
   faceId?: string;
   message?: string;
+  // Optional cloaking result fields
+  cloakedImageUri?: string; // data URI of cloaked image (PNG)
+  cloakedFilename?: string; // filename stored in backend images dir
+  downloadPath?: string;    // relative API path to download the cloaked file
 }
 
 export interface EnrolledPerson {
@@ -55,6 +59,10 @@ class FaceRecognitionService {
   constructor() {
   const envUrl = (process.env as any)?.EXPO_PUBLIC_BACKEND_URL as string | undefined;
   this.backendUrl = envUrl && envUrl.length > 0 ? envUrl : 'http://localhost:5001';
+  }
+
+  getBaseUrl(): string {
+    return this.backendUrl;
   }
 
   private async imageUriToBase64(imageUri: string): Promise<string> {
@@ -157,18 +165,43 @@ class FaceRecognitionService {
   }
 
   async enrollDataset(datasetName: string, files: DatasetFile[]): Promise<EnrollDatasetResult> {
+    // Large datasets can exceed JS/V8 string limits when JSON.stringify-ing one giant request body.
+    // Mitigation: split into manageable chunks and POST sequentially.
+    const CHUNK_SIZE = 50; // empirically safe; adjust if needed
     try {
-      const response = await fetch(`${this.backendUrl}/api/enroll-dataset`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ datasetName, files }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.message || 'Failed to enroll dataset');
-      return result;
+      const total = { copied: 0, uploaded: 0, indexed: 0, humanTotal: 0 };
+      const chunks: DatasetFile[][] = [];
+      for (let i = 0; i < files.length; i += CHUNK_SIZE) {
+        chunks.push(files.slice(i, i + CHUNK_SIZE));
+      }
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const response = await fetch(`${this.backendUrl}/api/enroll-dataset`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ datasetName, files: chunk }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result?.success) {
+          const msg = (result && result.message) ? result.message : 'Failed to enroll dataset chunk';
+          throw new Error(`${msg} (chunk ${i + 1}/${chunks.length})`);
+        }
+        const c = result.counts || {};
+        total.copied += Number(c.copied || 0);
+        total.uploaded += Number(c.uploaded || 0);
+        total.indexed += Number(c.indexed || 0);
+        total.humanTotal += Number(c.humanTotal || 0);
+      }
+
+      return {
+        success: true,
+        message: `Enrolled dataset ${datasetName} in ${chunks.length} chunk(s)`,
+        counts: total,
+      };
     } catch (e) {
       console.error('Error enrolling dataset:', e);
-      return { success: false, message: 'Failed to enroll dataset' };
+      return { success: false, message: e instanceof Error ? e.message : 'Failed to enroll dataset' };
     }
   }
 
