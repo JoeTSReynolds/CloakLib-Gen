@@ -48,7 +48,7 @@ if [ ! -f "$MARKER" ]; then
   # 5. Clone repo if missing
   if [ ! -d /root/CloakLib-Gen ]; then
     cd /root
-    git clone -b colab_app https://github.com/JoeTSReynolds/CloakLib-Gen
+    git clone https://github.com/JoeTSReynolds/CloakLib-Gen
   fi
 
   # 6. GPU driver

@@ -36,6 +36,7 @@ const FaceRecognitionScreen: React.FC = () => {
   const [isEnrolling, setIsEnrolling] = useState<boolean>(false);
   const [isRecognizing, setIsRecognizing] = useState<boolean>(false);
   const [recognitionResults, setRecognitionResults] = useState<FaceMatch[]>([]);
+  const [recognitionAttempted, setRecognitionAttempted] = useState<boolean>(false);
   const [enrollmentMessage, setEnrollmentMessage] = useState<string>('');
   const [cloakedPreviewUri, setCloakedPreviewUri] = useState<string | null>(null);
   const [cloakedDownloadUrl, setCloakedDownloadUrl] = useState<string | null>(null);
@@ -442,7 +443,8 @@ const [fontsLoaded] = useFonts({
     }
 
     setIsRecognizing(true);
-    setRecognitionResults([]);
+  setRecognitionResults([]);
+  setRecognitionAttempted(false);
 
     try {
       // Use real AWS backend implementation
@@ -454,9 +456,7 @@ const [fontsLoaded] = useFonts({
 
       if (result.success) {
         setRecognitionResults(result.matches);
-        if (result.matches.length === 0) {
-          Alert.alert('No Matches', 'No matching faces found in the collection');
-        }
+        setRecognitionAttempted(true);
       } else {
         Alert.alert('Error', result.message || 'Failed to recognize face');
       }
@@ -804,6 +804,14 @@ const [fontsLoaded] = useFonts({
                       )}
                     </View>
                   ))}
+                </View>
+              )}
+
+              {/* No match found message */}
+              {recognitionAttempted && recognitionResults.length === 0 && (
+                <View style={styles.resultsContainer}>
+                  <Text style={styles.resultsTitle}>Recognition Results</Text>
+                  <Text style={styles.emptyMessage}>No match found</Text>
                 </View>
               )}
             </View>
