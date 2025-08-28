@@ -211,6 +211,20 @@ python bucket_uploader.py --bucket-name my-dataset-bucket --rebalance --toleranc
 python bucket_uploader.py --bucket-name my-dataset-bucket --health
 ```
 
+### Running the Demo
+
+* Run the backend (to be run in backend/src)
+  
+```bash
+python backend.py
+```
+
+* Run the frontend (whilst backend is running, and in the frontend directory)
+
+```bash
+npx expo start --web
+```
+
 ---
 
 ## Demo
