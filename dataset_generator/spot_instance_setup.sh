@@ -78,7 +78,7 @@ if [ -f "$MARKER" ]; then
   /opt/miniconda/envs/py38/bin/aws configure set aws_secret_access_key [YOUR_AWS_SECRET_ACCESS_KEY]
   /opt/miniconda/envs/py38/bin/aws configure set default.region eu-west-2
   nohup /opt/miniconda/envs/py38/bin/python -u dataset_generator.py \
-    --aws-spot --aws-bucket jointcloaking --aws-region eu-west-2 --all-levels \
+    --aws-spot --aws-bucket [YOUR_BUCKET_NAME] --aws-region [BUCKET_REGION] --all-levels \
     >> cloak.log 2>&1 &
 fi
 echo "==== Setup complete ===="

@@ -10,7 +10,7 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import AWS spot handling modules
-from aws_spot_handler import AWSS3Handler, SpotInterruptHandler, setup_aws_environment, get_aws_config_from_args
+from aws_spot_handler import AWSS3Handler, SpotInterruptHandler, setup_aws_environment, get_aws_config_from_args, initialize_aws_dataset_structure
 
 from cloaklib import CloakingLibrary
 
@@ -1008,12 +1008,14 @@ def main():
     mode_group.add_argument("--cloak", action="store_true", help="Enable cloak mode. This will cloak the file/folder and add it to the library. If no name or no classifications are provided, it will be added to the Unsorted folder in the library.")
     mode_group.add_argument("--classify", action="store_true", help="Enable classify mode. This is used to reclassify files that have already been cloaked. It will not cloak the file again, but will add the classifications to the library. Provide the file path and name/classifications as arguments. Use --list to list files in the unsorted folder requiring classifications.")
     mode_group.add_argument("--aws-spot", action="store_true", help="Enable AWS spot instance mode for automatic S3 processing")
+    mode_group.add_argument("--aws-init", action="store_true", help="Initialize AWS S3 dataset folder structure (creates Dataset/Uncloaked, Dataset/Cloaked, Locks, Temp and required subfolders) and exit")
 
     # Arguments common to both modes (but not AWS spot mode)
     # Custom logic to make input_path required except for --classify --list/--sync/--check or --aws-spot
     if (
         ("--classify" in sys.argv and ("--list" in sys.argv or "--sync" in sys.argv or "--check" in sys.argv)) or
-        "--aws-spot" in sys.argv
+        "--aws-spot" in sys.argv or
+        "--aws-init" in sys.argv
     ):
         # Don't require input_path for these subcommands
         parser.add_argument("input_path", type=str, nargs="?", help="Image file to process, or directory if --dir is specified (not needed for --aws-spot)")
@@ -1072,8 +1074,27 @@ def main():
         for arg in classify_only_args:
             if getattr(args, arg):
                 parser.error(f"--{arg.replace('_', '-')} can only be used with --classify mode.")
+    elif args.aws_init:
+        # Initialization mode should not combine with cloak/classify-specific toggles
+        for arg in (cloak_only_args + classify_only_args):
+            if getattr(args, arg) and f"--{arg.replace('_', '-')}" in sys.argv:
+                parser.error(f"--{arg.replace('_', '-')} cannot be used with --aws-init mode.")
 
     args = parser.parse_args()
+
+    # AWS S3 folder structure initialization mode
+    if getattr(args, "aws_init", False):
+        if not args.aws_bucket:
+            print("Error: --aws-bucket is required when using --aws-init mode.")
+            sys.exit(1)
+        print("Initializing AWS S3 dataset folder structure...")
+        ok = initialize_aws_dataset_structure(bucket_name=args.aws_bucket, aws_region=args.aws_region)
+        if ok:
+            print("AWS S3 dataset structure initialized (or already present). Exiting.")
+            return
+        else:
+            print("Failed to initialize AWS S3 dataset structure.")
+            sys.exit(1)
 
     # AWS Spot Instance Mode
     if args.aws_spot:
